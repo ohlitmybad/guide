@@ -1,4 +1,4 @@
-name: Update Localization Files
+name: Update Guide and ProGuide
 
 on:
   push:
@@ -7,13 +7,21 @@ on:
       - 'index.html'
 
 jobs:
-  update-locales:
+  update-repos:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout code
+    - name: Checkout guide repo
       uses: actions/checkout@v3
       with:
+        path: guide
+        token: ${{ secrets.PAT }}
+        
+    - name: Checkout proguide repo
+      uses: actions/checkout@v3
+      with:
+        repository: ohlitmybad/proguide
+        path: proguide
         token: ${{ secrets.PAT }}
         
     - name: Set up Python
@@ -26,38 +34,93 @@ jobs:
         python -m pip install --upgrade pip
         pip install beautifulsoup4
         
-    - name: Create and run script
+    - name: Sync content and update files
       run: |
-        cat > update_locales.py << 'EOL'
+        cat > sync_repos.py << 'EOL'
         import json
         from bs4 import BeautifulSoup
+        import os
+        import shutil
 
-        # Load the HTML file
-        with open('index.html', 'r', encoding='utf-8') as file:
-            html_content = file.read()
-
+        # Process guide repo first
+        print("Processing guide repo...")
+        
+        # Load the HTML file from guide
+        with open('guide/index.html', 'r', encoding='utf-8') as file:
+            guide_html_content = file.read()
+        
         # Parse the HTML
-        soup = BeautifulSoup(html_content, 'html.parser')
-
+        guide_soup = BeautifulSoup(guide_html_content, 'html.parser')
+        
         # Find the div with data-i18n="page-content"
-        div_content = soup.find('div', attrs={'data-i18n': 'page-content'})
-
-        # Create JSON object
-        json_obj = {"page-content": str(div_content)}
-
-        # Write to en.json
-        with open('locales/en.json', 'w', encoding='utf-8') as json_file:
-            json.dump(json_obj, json_file, ensure_ascii=False, indent=2)
-
-        print("en.json file created successfully!")
+        guide_div_content = guide_soup.find('div', attrs={'data-i18n': 'page-content'})
+        
+        if not guide_div_content:
+            raise Exception("Could not find div with data-i18n='page-content' in guide repo")
+        
+        # Create JSON object for guide
+        guide_json_obj = {"page-content": str(guide_div_content)}
+        
+        # Write to guide en.json
+        os.makedirs('guide/locales', exist_ok=True)
+        with open('guide/locales/en.json', 'w', encoding='utf-8') as json_file:
+            json.dump(guide_json_obj, json_file, ensure_ascii=False, indent=2)
+        
+        print("Updated guide/locales/en.json successfully!")
+        
+        # Now process proguide repo
+        print("Processing proguide repo...")
+        
+        # Load the HTML file from proguide
+        with open('proguide/index.html', 'r', encoding='utf-8') as file:
+            proguide_html_content = file.read()
+        
+        # Parse the HTML
+        proguide_soup = BeautifulSoup(proguide_html_content, 'html.parser')
+        
+        # Find the div with data-i18n="page-content" in proguide
+        proguide_div_content = proguide_soup.find('div', attrs={'data-i18n': 'page-content'})
+        
+        if not proguide_div_content:
+            raise Exception("Could not find div with data-i18n='page-content' in proguide repo")
+        
+        # Replace the content with guide content
+        proguide_div_content.clear()
+        proguide_div_content.append(BeautifulSoup(str(guide_div_content.contents), 'html.parser'))
+        
+        # Write updated HTML back to proguide index.html
+        with open('proguide/index.html', 'w', encoding='utf-8') as file:
+            file.write(str(proguide_soup))
+        
+        print("Updated proguide/index.html successfully!")
+        
+        # Create JSON object for proguide (same as guide)
+        proguide_json_obj = {"page-content": str(guide_div_content)}
+        
+        # Write to proguide en.json
+        os.makedirs('proguide/locales', exist_ok=True)
+        with open('proguide/locales/en.json', 'w', encoding='utf-8') as json_file:
+            json.dump(proguide_json_obj, json_file, ensure_ascii=False, indent=2)
+        
+        print("Updated proguide/locales/en.json successfully!")
         EOL
         
-        python update_locales.py
+        python sync_repos.py
         
-    - name: Commit and push if changed
+    - name: Commit and push guide changes
       run: |
+        cd guide
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         git add locales/en.json
         git diff --quiet && git diff --staged --quiet || git commit -m "Update en.json automatically"
+        git push
+        
+    - name: Commit and push proguide changes
+      run: |
+        cd proguide
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add index.html locales/en.json
+        git diff --quiet && git diff --staged --quiet || git commit -m "Sync content from guide repo"
         git push
