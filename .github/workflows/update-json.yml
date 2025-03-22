@@ -26,29 +26,30 @@ jobs:
         
     - name: Update en.json
       run: |
-        python -c "
-import json
-from bs4 import BeautifulSoup
+        cat > update_json.py << 'EOF'
+        import json
+        from bs4 import BeautifulSoup
 
-# Load the HTML file
-with open('index.html', 'r', encoding='utf-8') as file:
-    html_content = file.read()
+        # Load the HTML file
+        with open('index.html', 'r', encoding='utf-8') as file:
+            html_content = file.read()
 
-# Parse the HTML
-soup = BeautifulSoup(html_content, 'html.parser')
+        # Parse the HTML
+        soup = BeautifulSoup(html_content, 'html.parser')
 
-# Find the div with data-i18n=\"page-content\"
-div_content = soup.find('div', attrs={'data-i18n': 'page-content'})
+        # Find the div with data-i18n="page-content"
+        div_content = soup.find('div', attrs={'data-i18n': 'page-content'})
 
-# Create JSON object
-json_obj = {\"page-content\": str(div_content)}
+        # Create JSON object
+        json_obj = {"page-content": str(div_content)}
 
-# Write to en.json
-with open('locales/en.json', 'w', encoding='utf-8') as json_file:
-    json.dump(json_obj, json_file, ensure_ascii=False, indent=2)
+        # Write to en.json
+        with open('locales/en.json', 'w', encoding='utf-8') as json_file:
+            json.dump(json_obj, json_file, ensure_ascii=False, indent=2)
 
-print(\"en.json file updated successfully!\")
-        "
+        print("en.json file updated successfully!")
+        EOF
+        python update_json.py
         
     - name: Commit and push if changed
       run: |
