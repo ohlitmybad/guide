@@ -5,7 +5,8 @@
   <link rel="canonical" href="https://datamb.football/guide/" />
   <link rel="alternate" hreflang="x-default" href="https://datamb.football/guide" />  
   <link rel="alternate" hreflang="en" href="https://datamb.football/guide/?lang=en" />
-<link rel="shortcut icon" type="image/x-icon" href="https://datamb.football/favicon.ico">
+  <link rel="alternate" hreflang="fr" href="https://datamb.football/guide/?lang=fr" />
+  <link rel="shortcut icon" type="image/x-icon" href="https://datamb.football/favicon.ico">
   <title data-i18n="meta.title">DataMB | Guide</title>
   <meta name="description" data-i18n="meta.description" content="Explanation of the tools, metrics, and methodology used by DataMB">
   <meta name="viewport" content="width=device-width, initial-scale=0.69">
@@ -750,7 +751,7 @@ color: #fff;
        
 
 
-        .language-switcher-container {
+.language-switcher-container {
   position: relative;
   display: none;
 }
@@ -842,8 +843,9 @@ color: #fff;
     <button class="language-button" id="languageButton">
       <iconify-icon icon="heroicons:globe-alt"></iconify-icon>
     </button>
-    <div class="language-dropdown" id="languageDropdown">
+        <div class="language-dropdown" id="languageDropdown">
       <a href="?lang=en" class="language-option"><iconify-icon icon="flag:gb-4x3"></iconify-icon>English</a>
+      <a href="?lang=fr" class="language-option"><iconify-icon icon="flag:fr-4x3"></iconify-icon>Français</a>
     </div>
   </div>
 </div>
@@ -2116,16 +2118,17 @@ function _0x5707(_0xd20fa7,_0x4d36b5){const _0x4dcd69=_0x4dcd();return _0x5707=f
 
 
 <script>
-function setLanguage(language) {
+ function setLanguage(language) {
     localStorage.setItem('preferredLanguage', language);
     const url = new URL(window.location.href);
     if (language === 'en') {
       url.searchParams.delete('lang');
+      applyLanguage('xx');
     } else {
       url.searchParams.set('lang', language);
+      applyLanguage(language);
     }
     window.history.pushState({}, '', url);
-    applyLanguage(language);
   }
   
   function getPreferredLanguage() {
@@ -2174,7 +2177,9 @@ function setLanguage(language) {
             if (value) {
               if (element.tagName === 'META') {
               element.setAttribute('content', value);
-          } else if (value.includes('<')) {
+          } else if (element.tagName === 'INPUT') {
+        element.setAttribute('placeholder', value);
+    } else if (value.includes('<')) {
               element.innerHTML = value;
           } else {
               element.textContent = value;
