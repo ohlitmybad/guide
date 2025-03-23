@@ -49,16 +49,37 @@ jobs:
         with open('guide/index.html', 'r', encoding='utf-8') as file:
             guide_html_content = file.read()
         
-        # The div is the last one in the document
-        # Extract content between opening div with data-i18n="page-content" and the last closing div
-        page_content_match = re.search(r'<div[^>]*data-i18n="page-content"[^>]*>(.*)</div>$', 
+        # Print first few characters to debug
+        print("First 500 chars of guide HTML:", guide_html_content[:500])
+        
+        # Match unquoted attribute: data-i18n=page-content
+        page_content_match = re.search(r'<div[^>]*data-i18n=page-content[^>]*>(.*)</div>$', 
                                       guide_html_content, re.DOTALL)
         
         if not page_content_match:
-            raise Exception("Could not find div with data-i18n='page-content' in guide repo")
-        
-        # Get the inner content
-        guide_inner_content = page_content_match.group(1)
+            # Try with quotes as fallback
+            print("Unquoted regex failed, trying with quotes...")
+            page_content_match = re.search(r'<div[^>]*data-i18n=["|\']page-content["|\'][^>]*>(.*)</div>$', 
+                                         guide_html_content, re.DOTALL)
+            
+            if not page_content_match:
+                # Try with BeautifulSoup as a last resort
+                print("Regex failed, trying with BeautifulSoup...")
+                soup = BeautifulSoup(guide_html_content, 'html.parser')
+                div = soup.find('div', attrs={'data-i18n': 'page-content'})
+                if div:
+                    # Get innerHTML as string
+                    guide_inner_content = ''.join(str(c) for c in div.contents)
+                    print("Found with BeautifulSoup")
+                else:
+                    raise Exception("Could not find div with data-i18n='page-content' in guide repo")
+            else:
+                guide_inner_content = page_content_match.group(1)
+                print("Found with quoted regex")
+        else:
+            # Get the inner content
+            guide_inner_content = page_content_match.group(1)
+            print("Found with unquoted regex")
         
         # Create JSON object for guide - using only the inner content
         guide_json_obj = {"page-content": guide_inner_content}
@@ -77,13 +98,21 @@ jobs:
         with open('proguide/index.html', 'r', encoding='utf-8') as file:
             proguide_html_content = file.read()
         
-        # Replace exactly between the opening page-content div and the last closing div
-        # This ensures the exact replacement at the same position
-        pattern = r'(<div[^>]*data-i18n="page-content"[^>]*>).*?(</div>$)'
+        # Print first few characters to debug
+        print("First 500 chars of proguide HTML:", proguide_html_content[:500])
+        
+        # Try unquoted pattern first
+        pattern = r'(<div[^>]*data-i18n=page-content[^>]*>).*?(</div>$)'
         replacement = r'\1' + guide_inner_content + r'\2'
         
-        # Replace the content - maintaining exact same positions
+        # Replace the content
         updated_proguide_html = re.sub(pattern, replacement, proguide_html_content, flags=re.DOTALL)
+        
+        # If no replacement happened, try with quotes
+        if updated_proguide_html == proguide_html_content:
+            print("Unquoted replacement failed, trying with quotes...")
+            pattern = r'(<div[^>]*data-i18n=["|\']page-content["|\'][^>]*>).*?(</div>$)'
+            updated_proguide_html = re.sub(pattern, replacement, proguide_html_content, flags=re.DOTALL)
         
         # Write updated HTML back to proguide index.html
         with open('proguide/index.html', 'w', encoding='utf-8') as file:
