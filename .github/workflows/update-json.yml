@@ -61,8 +61,8 @@ jobs:
         # Extract just the inner content of the div (without the div tag itself)
         guide_inner_content = ''.join(str(child) for child in guide_div_content.children)
         
-        # Create JSON object for guide - using the full div including tag
-        guide_json_obj = {"page-content": str(guide_div_content)}
+        # Create JSON object for guide - using only the inner content
+        guide_json_obj = {"page-content": guide_inner_content}
         
         # Write to guide en.json
         os.makedirs('guide/locales', exist_ok=True)
@@ -96,7 +96,7 @@ jobs:
         # We need to parse the updated HTML to get the correct div
         updated_soup = BeautifulSoup(updated_proguide_html, 'html.parser')
         updated_div = updated_soup.find('div', attrs={'data-i18n': 'page-content'})
-        proguide_json_obj = {"page-content": str(updated_div)}
+        proguide_json_obj = {"page-content": ''.join(str(child) for child in updated_div.children)}
         
         # Write to proguide en.json
         os.makedirs('proguide/locales', exist_ok=True)
