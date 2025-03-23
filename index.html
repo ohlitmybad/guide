@@ -2159,10 +2159,10 @@ function _0x5707(_0xd20fa7,_0x4d36b5){const _0x4dcd69=_0x4dcd();return _0x5707=f
             languageMeta.setAttribute('content', language);
         }
     })
-    .catch(error => {
-        console.error('Error fetching or processing translations:', error);
-    });
-  
+    .catch(() => {
+        // Completely empty catch block to silently ignore any errors
+      });
+  }
   const preferredLanguage = getPreferredLanguage();
   applyLanguage(preferredLanguage);
   
