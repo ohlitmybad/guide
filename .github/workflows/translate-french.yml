@@ -135,19 +135,30 @@ jobs:
             
             # Extract changed lines (lines starting with + or -)
             changed_line_indices = []
+            current_hunk_start = 0
+            current_hunk_offset = 0
+            
             for i, line in enumerate(diff):
-                if line.startswith('+') and not line.startswith('+++') and not re.match(r'^\+\s*$', line):
+                # Check if this is a diff header line (starting with @@)
+                if line.startswith('@@'):
+                    # Parse the header line to extract line numbers
+                    # Format is typically: @@ -old_start,old_count +new_start,new_count @@
+                    header_match = re.search(r'@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@', line)
+                    if header_match:
+                        current_hunk_start = int(header_match.group(1)) - 1
+                        current_hunk_offset = 0
+                
+                elif line.startswith('+') and not line.startswith('+++') and not re.match(r'^\+\s*$', line):
                     # This is an added line that's not just whitespace
-                    line_index = int(re.search(r'@@ -\d+,\d+ \+(\d+),', diff[max(0, i-1)]).group(1)) - 1
-                    offset = sum(1 for j in range(i) if diff[j].startswith('+') and not diff[j].startswith('+++'))
-                    changed_line_indices.append(line_index + offset - 1)
+                    changed_line_indices.append(current_hunk_start + current_hunk_offset)
+                    current_hunk_offset += 1
                 elif line.startswith('-') and not line.startswith('---') and not re.match(r'^-\s*$', line):
                     # This is a removed line that's not just whitespace
-                    line_index = int(re.search(r'@@ -(\d+),', diff[max(0, i-1)]).group(1)) - 1
-                    offset = sum(1 for j in range(i) if diff[j].startswith('-') and not diff[j].startswith('---'))
-                    # For removed lines, we need to reference the position in the current file where content would have been
-                    corresponding_index_in_current = max(0, line_index + offset - 1)
-                    changed_line_indices.append(corresponding_index_in_current)
+                    # Don't increment offset for removed lines as they don't exist in the new file
+                    pass
+                else:
+                    # Context line or other line
+                    current_hunk_offset += 1
             
             log_with_time(f"Found {len(changed_line_indices)} lines with actual content changes")
             
