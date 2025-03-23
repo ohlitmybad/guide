@@ -267,24 +267,124 @@ jobs:
                     translated_block = translate_block(block, i, len(blocks_to_translate))
                     
                     # Find where this block should go in the original content
-                    # This is simplified and might need improvement for complex changes
-                    # A more robust approach would be to track the position of each block in the original
-                    # and apply changes in order from end to beginning to avoid position shifts
                     block_start = current_page_content.find(block)
                     if block_start != -1:
                         log_with_time(f"Found position of block {i+1} in original content")
+                        
+                        # Instead of a simple ratio-based approach, which can cause misalignment,
+                        # let's try to find unique HTML markers around the changed block to locate
+                        # the correct position in the translated content
+                        
+                        # Extract a few lines before and after the block as "anchors"
+                        context_before = current_page_content[max(0, block_start-200):block_start]
+                        context_after = current_page_content[block_start+len(block):min(len(current_page_content), block_start+len(block)+200)]
+                        
+                        # Find unique HTML patterns in the context (like tags with specific ids or classes)
+                        def extract_unique_pattern(text, min_length=15):
+                            # Look for tag patterns that are likely unique
+                            patterns = re.findall(r'<[^>]+id="[^"]+"[^>]*>', text)
+                            if not patterns:
+                                patterns = re.findall(r'<[^>]+class="[^"]+"[^>]*>', text)
+                            if not patterns:
+                                # If no ID/class tags found, try other unique patterns
+                                patterns = re.findall(r'<h\d>[^<]{5,}</h\d>', text)
+                            if not patterns:
+                                # Fall back to any HTML tag with content
+                                patterns = re.findall(r'<[a-z1-6]+>[^<]{5,}</[a-z1-6]+>', text)
+                                
+                            # Filter for patterns that are likely unique
+                            unique_patterns = [p for p in patterns if len(p) >= min_length]
+                            return unique_patterns[0] if unique_patterns else None
+                        
+                        # If the block is very small (like just a date change), get more context
+                        if len(block) < 50:
+                            log_with_time(f"Block {i+1} is very small, getting more context for accurate positioning")
+                            # Get more context before and after
+                            more_context_before = current_page_content[max(0, block_start-500):block_start]
+                            more_context_after = current_page_content[block_start+len(block):min(len(current_page_content), block_start+len(block)+500)]
+                            
+                            # Look for complete HTML elements or sections
+                            # Find the nearest opening tag before the block
+                            tag_before_match = re.search(r'<([a-z][a-z0-9]*)[^>]*>(?:[^<]|<(?!/\1))*$', more_context_before)
+                            # Find the nearest closing tag after the block
+                            tag_after_match = re.search(r'^(?:[^>]|<(?!/[a-z]))*</([a-z][a-z0-9]*)>', more_context_after)
+                            
+                            if tag_before_match and tag_after_match and tag_before_match.group(1) == tag_after_match.group(1):
+                                # We found matching tags enclosing our small change
+                                tag_name = tag_before_match.group(1)
+                                log_with_time(f"Found enclosing {tag_name} tags for the small change")
+                                
+                                # Find the complete element in the original content
+                                element_pattern = more_context_before[tag_before_match.start():] + block + more_context_after[:tag_after_match.end()]
+                                
+                                # Find this element in the translated content
+                                # First try exact structure matching
+                                element_structure = re.sub(r'>([^<]+)<', '><', element_pattern)  # Remove text between tags to match structure
+                                translated_structure = re.sub(r'>([^<]+)<', '><', translation_base)
+                                
+                                structure_pos = translated_structure.find(element_structure)
+                                if structure_pos != -1:
+                                    # Found matching structure, now extract the corresponding full element from translation
+                                    translated_element_match = re.search(element_structure, translated_structure)
+                                    if translated_element_match:
+                                        element_start = translated_structure.find(translated_element_match.group(0))
+                                        element_end = element_start + len(translated_element_match.group(0))
+                                        
+                                        # Now, only translate the small change, not the entire element
+                                        # Find the exact position of the small change within the element
+                                        relative_change_pos = element_pattern.find(block)
+                                        if relative_change_pos != -1:
+                                            # Translate just the small part that changed
+                                            small_part_translated = translate_block(block, i, len(blocks_to_translate))
+                                            
+                                            # Update just that small part in the translated content
+                                            translated_content = translation_base[:element_start+relative_change_pos] + small_part_translated + translation_base[element_start+relative_change_pos+len(block):]
+                                            log_with_time(f"Successfully updated just the small changed part in block {i+1}")
+                                            continue
+                        
+                        # If we couldn't do precise small change replacement, fall back to pattern matching
+                        before_pattern = extract_unique_pattern(context_before)
+                        after_pattern = extract_unique_pattern(context_after)
+                        
+                        if before_pattern and after_pattern:
+                            # Try to find these patterns in the translated content
+                            before_pos = translation_base.find(before_pattern)
+                            after_pos = translation_base.find(after_pattern, before_pos if before_pos != -1 else 0)
+                            
+                            if before_pos != -1 and after_pos != -1:
+                                # We found good anchor points in the translated content
+                                log_with_time(f"Found anchor points for block {i+1} in translated content")
+                                
+                                # Extract the corresponding block in the translated content
+                                corresponding_block = translation_base[before_pos + len(before_pattern):after_pos]
+                                
+                                # Replace just that block with the new translation
+                                translated_content = translation_base[:before_pos + len(before_pattern)] + translated_block + translation_base[after_pos:]
+                                log_with_time(f"Updated translated content with precise positioning for block {i+1}")
+                                continue
+                        
+                        # Fallback to the ratio-based approach if we couldn't find good patterns
+                        log_with_time(f"Couldn't find precise anchors for block {i+1}, using ratio-based approach")
                         # Find the corresponding position in the translated content
-                        # This is a simplification and might not work perfectly for all cases
                         ratio = len(translated_content) / len(current_page_content)
                         estimated_pos = int(block_start * ratio)
                         
-                        # Search around the estimated position for key elements from before/after the block
-                        # This is a complex problem that might require more sophisticated matching
+                        # Apply the translation with a margin around it to avoid cutting in the middle of HTML tags
+                        # This is still a fallback approach
+                        safe_start = max(0, estimated_pos - 10)
+                        safe_end = min(len(translated_content), estimated_pos + len(block) * ratio + 10)
                         
-                        # For now, just replace the next occurrence of a similar pattern
-                        # This is a placeholder for a more robust approach
-                        log_with_time(f"Updating translated content with block {i+1}")
-                        translated_content = translated_content[:estimated_pos] + translated_block + translated_content[estimated_pos + len(translated_block):]
+                        # Look for tag boundaries for safer replacement
+                        tag_start = translated_content.rfind('>', safe_start, estimated_pos)
+                        tag_end = translated_content.find('<', estimated_pos, safe_end)
+                        
+                        if tag_start != -1 and tag_end != -1:
+                            log_with_time(f"Found tag boundaries for safer replacement in block {i+1}")
+                            translated_content = translated_content[:tag_start+1] + translated_block + translated_content[tag_end:]
+                        else:
+                            # Last resort - direct replacement at estimated position
+                            log_with_time(f"Updating translated content at estimated position for block {i+1}")
+                            translated_content = translated_content[:estimated_pos] + translated_block + translated_content[estimated_pos + int(len(block) * ratio):]
         
         # Create the fr.json file
         log_with_time("Creating fr.json file")
