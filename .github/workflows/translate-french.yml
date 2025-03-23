@@ -51,7 +51,7 @@ jobs:
         response = client.chat.completions.create(
             model="gpt-4o-mini",  # Use "gpt-4" or "gpt-3.5-turbo"
             messages=[
-                {"role": "system", "content": "Translate the given JSON HTML content into French while keeping all JSON HTML tags and structure intact. Use widely accepted French football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning."},
+                {"role": "system", "content": "Translate the given JSON HTML content into French while keeping all JSON HTML tags and structure intact. Use widely accepted French football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translations of what's in page_content and that only"},
                 {"role": "user", "content": page_content}
             ],
             temperature=0.7
