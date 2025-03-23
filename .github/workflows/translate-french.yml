@@ -29,6 +29,9 @@ jobs:
     - name: Translate xx.json to French
       env:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}  # Add your OpenAI API key to GitHub Secrets
+      id: translate
+      timeout-minutes: 5
+      continue-on-error: true
       run: |
         cat > translate_to_french.py << 'EOL'
         import json
@@ -102,7 +105,17 @@ jobs:
 
         python translate_to_french.py
 
+    - name: Retry translation if needed
+      if: steps.translate.outcome == 'failure' || steps.translate.outcome == 'timed_out'
+      env:
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      timeout-minutes: 10
+      run: |
+        echo "First translation attempt failed or timed out. Retrying..."
+        python translate_to_french.py
+
     - name: Commit and push French translation
+      if: steps.translate.outcome == 'success' || success()
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
