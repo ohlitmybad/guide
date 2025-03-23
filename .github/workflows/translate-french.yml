@@ -4,7 +4,7 @@ on:
   push:
     branches: [ main, master ]
     paths:
-      - 'guide/locales/en.json'
+      - 'locales/en.json'
 
 jobs:
   translate-to-french:
@@ -14,7 +14,6 @@ jobs:
     - name: Checkout guide repo
       uses: actions/checkout@v3
       with:
-        path: guide
         token: ${{ secrets.PAT }}
 
     - name: Set up Python
@@ -37,7 +36,7 @@ jobs:
         import openai
 
         # Load the en.json file
-        with open('guide/locales/en.json', 'r', encoding='utf-8') as file:
+        with open('locales/en.json', 'r', encoding='utf-8') as file:
             en_data = json.load(file)
 
         # Extract the page-content
@@ -50,31 +49,30 @@ jobs:
 
         # Translate the content to French
         response = openai.ChatCompletion.create(
-            model="gpt-4o-mini",
+            model="gpt-4",  # Use "gpt-4" or "gpt-3.5-turbo"
             messages=[
                 {"role": "system", "content": "Translate the given JSON HTML content into French while keeping all JSON HTML tags and structure intact. Use widely accepted French football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning."},
                 {"role": "user", "content": page_content}
             ],
             temperature=0.7
-            )
+        )
 
         # Extract the translated content
         translated_content = response['choices'][0]['message']['content']
 
         # Create the fr.json file
         fr_data = {"page-content": translated_content}
-        os.makedirs('guide/locales', exist_ok=True)
-        with open('guide/locales/fr.json', 'w', encoding='utf-8') as json_file:
+        os.makedirs('locales', exist_ok=True)
+        with open('locales/fr.json', 'w', encoding='utf-8') as json_file:
             json.dump(fr_data, json_file, ensure_ascii=False, indent=2)
 
-        print("Translated content saved to guide/locales/fr.json")
+        print("Translated content saved to locales/fr.json")
         EOL
 
         python translate_to_french.py
 
     - name: Commit and push French translation
       run: |
-        cd guide
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         git add locales/fr.json
