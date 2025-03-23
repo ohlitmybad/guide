@@ -15,7 +15,7 @@ jobs:
       uses: actions/checkout@v3
       with:
         token: ${{ secrets.PAT }}
-        fetch-depth: 2  # Fetch the current and previous commit
+        fetch-depth: 2  # To get the previous commit for comparison
 
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -25,537 +25,214 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install openai
+        pip install openai beautifulsoup4 lxml
 
-    - name: Translate modified parts of xx.json to French
+    - name: Update French Translation Based on Changes
       env:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      id: translate
       run: |
-        cat > translate_to_french.py << 'EOL'
+        cat > translate_changes.py << 'EOL'
         import json
         import os
         import time
         import sys
-        import difflib
         import re
         import subprocess
+        from bs4 import BeautifulSoup
         from openai import OpenAI
 
-        # Function to log with timestamps
         def log_with_time(message):
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
             print(f"[{timestamp}] {message}")
-            sys.stdout.flush()  # Force output to be written immediately
+            sys.stdout.flush()
 
-        start_time = time.time()
-        log_with_time("Starting translation process")
+        # Get old version of xx.json from the previous commit
+        def get_previous_version():
+            log_with_time("Getting previous version of xx.json")
+            try:
+                result = subprocess.run(
+                    ["git", "show", "HEAD~1:locales/xx.json"],
+                    capture_output=True, text=True, check=True
+                )
+                return json.loads(result.stdout)
+            except Exception as e:
+                log_with_time(f"Error getting previous version: {e}")
+                log_with_time("This might be the first commit with xx.json")
+                return None
 
-        # Get previous and current versions of xx.json
-        log_with_time("Getting previous version of xx.json")
-        try:
-            # Get the hash of the previous commit
-            prev_hash = subprocess.check_output(
-                ['git', 'rev-parse', 'HEAD~1'],
-                universal_newlines=True
-            ).strip()
-            
-            # Get the previous version of xx.json
-            prev_content = subprocess.check_output(
-                ['git', 'show', f'{prev_hash}:locales/xx.json'],
-                universal_newlines=True
-            )
-            prev_data = json.loads(prev_content)
-            prev_page_content = prev_data.get('page-content', '')
-            
-            log_with_time("Successfully loaded previous version of xx.json")
-        except Exception as e:
-            log_with_time(f"Error getting previous version: {e}")
-            log_with_time("Will translate the entire file as fallback")
-            prev_page_content = ""
-
-        # Load the current xx.json file
+        # Load current version of xx.json
         log_with_time("Loading current xx.json file")
         with open('locales/xx.json', 'r', encoding='utf-8') as file:
             current_data = json.load(file)
-            
-        # Extract the current page-content
-        log_with_time("Extracting current page-content")
-        current_page_content = current_data.get('page-content', '')
-        if not current_page_content:
-            raise Exception("No 'page-content' found in xx.json")
-            
-        # Check if we need to translate existing fr.json
-        fr_exists = os.path.exists('locales/fr.json')
-        fr_data = {}
-        if fr_exists:
-            log_with_time("Found existing fr.json, loading it")
+
+        # Try to load existing fr.json if it exists
+        fr_data = {
+            "common": {"nav": {"players": "Joueurs", "pro": "Pro", "teams": "Équipes"}},
+            "meta": {"title": "DataMB | Guide", "description": "Explication des outils, des statistiques et de la méthodologie utilisés par DataMB"},
+            "search": {"placeholder": "Cherchez une équipe ou joueur..."},
+            "page-content": ""
+        }
+        
+        try:
             with open('locales/fr.json', 'r', encoding='utf-8') as file:
                 fr_data = json.load(file)
-                
-        # Initialize translation base (what we'll start with)
-        translation_base = fr_data.get('page-content', '') if fr_exists else ''
+                log_with_time("Loaded existing fr.json file")
+        except FileNotFoundError:
+            log_with_time("No existing fr.json found, will create a new one")
+
+        # Get the previous version of xx.json
+        previous_data = get_previous_version()
+        
+        if not previous_data:
+            log_with_time("No previous version found, will translate the entire content")
+            previous_content = ""
+        else:
+            previous_content = previous_data.get('page-content', '')
+
+        current_content = current_data.get('page-content', '')
+        french_content = fr_data.get('page-content', '')
+
+        if not current_content:
+            log_with_time("No 'page-content' found in current xx.json")
+            sys.exit(1)
+
+        # Function to find the containing div for a specific text
+        def find_containing_div(html_content, text_fragment):
+            soup = BeautifulSoup(html_content, 'lxml')
             
-        # Initialize OpenAI API
+            # Find all text nodes containing the fragment
+            text_nodes = []
+            for string in soup.strings:
+                if text_fragment in string:
+                    text_nodes.append(string)
+            
+            divs = []
+            for text_node in text_nodes:
+                # Find the closest containing div
+                parent = text_node.parent
+                div = None
+                while parent and parent.name != 'div':
+                    parent = parent.parent
+                
+                if parent and parent.name == 'div':
+                    divs.append(str(parent))
+            
+            return divs
+
+        # Initialize OpenAI client
         log_with_time("Initializing OpenAI API client")
         client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-        
-        # Function to find HTML blocks that have changed
-        def find_changed_blocks(prev_html, current_html):
-            log_with_time("Finding changed HTML blocks")
-            
-            if not prev_html:
-                log_with_time("No previous content found, will translate everything")
-                return [current_html]  # If no previous content, return the entire current content
-                
-            # Create a diff of the HTML content
-            differ = difflib.Differ()
-            diff = list(differ.compare(prev_html.splitlines(), current_html.splitlines()))
 
-            # Find changed lines
-            changed_lines = []
-            for i, line in enumerate(diff):
-                if line.startswith('+ ') or line.startswith('- '):
-                    changed_lines.append((i, line[0], line[2:]))  # Store (index, type, content)
+        # Function to detect non-whitespace changes
+        def detect_changes(old_text, new_text):
+            # Remove whitespace from both texts for comparison
+            old_normalized = re.sub(r'\s+', '', old_text)
+            new_normalized = re.sub(r'\s+', '', new_text)
             
-            if not changed_lines:
-                log_with_time("No changes detected, will translate everything")
-                return [current_html]
-                
-            log_with_time(f"Found {len(changed_lines)} changed lines")
-            
-            # Group consecutive changed lines
-            change_groups = []
-            current_group = [changed_lines[0]]
-            
-            for i in range(1, len(changed_lines)):
-                if changed_lines[i][0] - changed_lines[i-1][0] <= 2:  # Allow 1 line gap
-                    current_group.append(changed_lines[i])
-                else:
-                    change_groups.append(current_group)
-                    current_group = [changed_lines[i]]
-            
-            if current_group:
-                change_groups.append(current_group)
-                
-            log_with_time(f"Grouped into {len(change_groups)} change groups")
-            
-            # Extract specific containers containing changes
-            changed_blocks = []
-            
-            for group in change_groups:
-                # Get context around the changed lines
-                start_line = max(0, group[0][0] - 3)
-                end_line = min(len(diff), group[-1][0] + 4)
-                
-                # Get all added lines in this group
-                added_lines = [line for _, type_, line in group if type_ == '+']
-                # Get all removed lines in this group
-                removed_lines = [line for _, type_, line in group if type_ == '-']
-                
-                # Get context lines
-                context_lines = []
-                for i in range(start_line, end_line):
-                    if i < len(diff) and diff[i].startswith('  '):
-                        context_lines.append(diff[i][2:])
-                
-                # Create a context block with both added lines and context
-                added_context = context_lines + added_lines
-                added_context_str = '\n'.join(added_context)
-                
-                # Create a context block with both removed lines and context
-                removed_context = context_lines + removed_lines
-                removed_context_str = '\n'.join(removed_context)
-                
-                # Determine container element
-                if added_lines:
-                    log_with_time("Finding container for added/modified content")
-                    container = find_minimal_container(current_html, added_lines)
-                    if container:
-                        log_with_time(f"Found container for added content: {container[:50]}...")
-                        changed_blocks.append(container)
-                
-                if removed_lines:
-                    log_with_time("Finding container for removed/replaced content")
-                    # Find what replaced the removed content in the current HTML
-                    replacement = find_replacement_container(prev_html, current_html, removed_lines)
-                    if replacement and replacement not in changed_blocks:
-                        log_with_time(f"Found replacement container: {replacement[:50]}...")
-                        changed_blocks.append(replacement)
-            
-            # Remove duplicates
-            unique_blocks = []
-            seen = set()
-            for block in changed_blocks:
-                if block not in seen:
-                    seen.add(block)
-                    unique_blocks.append(block)
-            
-            if not unique_blocks:
-                log_with_time("Couldn't identify specific containers, will translate everything")
-                return [current_html]
-                
-            log_with_time(f"Identified {len(unique_blocks)} unique container blocks to translate")
-            return unique_blocks
-        
-        # Find the smallest HTML container that contains the changed content
-        def find_minimal_container(html, changed_lines):
-            container_tags = ['li', 'ul', 'ol', 'div', 'p', 'span', 'section', 'article', 'td', 'th']
-            
-            # Try to find the exact line in the HTML
-            for line in changed_lines:
-                line = line.strip()
-                if not line:
-                    continue
-                    
-                # Find position of this line in the HTML
-                pos = html.find(line)
-                if pos == -1:
-                    continue
-                
-                # Look backward for the nearest opening tag
-                for tag in container_tags:
-                    # Find the nearest opening tag before this position
-                    open_tag = f'<{tag}'
-                    open_pos = html.rfind(open_tag, 0, pos)
-                    if open_pos == -1:
-                        continue
-                    
-                    # Make sure we found a complete tag
-                    tag_end = html.find('>', open_pos)
-                    if tag_end == -1 or tag_end > pos:
-                        continue
-                    
-                    # Find the matching closing tag
-                    close_tag = f'</{tag}>'
-                    close_pos = html.find(close_tag, pos)
-                    if close_pos == -1:
-                        continue
-                    
-                    # Make sure the container isn't too large
-                    container_size = close_pos + len(close_tag) - open_pos
-                    if container_size < 3000:  # Reasonable size limit
-                        return html[open_pos:close_pos + len(close_tag)]
-            
-            # If we can't find a good container for any line, try with the concatenated content
-            concatenated = ' '.join([line.strip() for line in changed_lines if line.strip()])
-            if len(concatenated) > 10:  # Only try if we have enough text
-                for i in range(0, min(30, len(concatenated))):
-                    substring = concatenated[i:]
-                    pos = html.find(substring)
-                    if pos != -1:
-                        # Found a match, look for container tags
-                        for tag in container_tags:
-                            open_tag = f'<{tag}'
-                            open_pos = html.rfind(open_tag, 0, pos)
-                            if open_pos == -1:
-                                continue
-                            
-                            tag_end = html.find('>', open_pos)
-                            if tag_end == -1 or tag_end > pos:
-                                continue
-                            
-                            close_tag = f'</{tag}>'
-                            close_pos = html.find(close_tag, pos)
-                            if close_pos == -1:
-                                continue
-                            
-                            container_size = close_pos + len(close_tag) - open_pos
-                            if container_size < 3000:
-                                return html[open_pos:close_pos + len(close_tag)]
-            
-            return None
-            
-        # Find the container in current HTML that replaced a removed container
-        def find_replacement_container(prev_html, current_html, removed_lines):
-            # If removed lines contain HTML tags, extract them for better matching
-            tags = []
-            for line in removed_lines:
-                tag_matches = re.findall(r'<([a-z][a-z0-9]*)[^>]*>', line)
-                tags.extend(tag_matches)
-            
-            if not tags:
-                return None
-                
-            # Count tags to find the most common ones
-            tag_counts = {}
-            for tag in tags:
-                tag_counts[tag] = tag_counts.get(tag, 0) + 1
-                
-            # Sort by frequency
-            sorted_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)
-            
-            # Look for similar container in current HTML based on tag structure
-            for tag, _ in sorted_tags[:3]:  # Try top 3 most common tags
-                # Find where this tag was in the previous HTML around the removed lines
-                concatenated = ' '.join([line.strip() for line in removed_lines if line.strip()])
-                if len(concatenated) < 10:
-                    continue
-                    
-                # Find position in previous HTML
-                prev_pos = prev_html.find(concatenated[:min(30, len(concatenated))])
-                if prev_pos == -1:
-                    continue
-                
-                # Find the containing element in previous HTML
-                open_tag = f'<{tag}'
-                prev_open_pos = prev_html.rfind(open_tag, 0, prev_pos)
-                if prev_open_pos == -1:
-                    continue
-                    
-                prev_tag_end = prev_html.find('>', prev_open_pos)
-                if prev_tag_end == -1 or prev_tag_end > prev_pos:
-                    continue
-                    
-                prev_close_tag = f'</{tag}>'
-                prev_close_pos = prev_html.find(prev_close_tag, prev_pos)
-                if prev_close_pos == -1:
-                    continue
-                
-                # Get some context before and after the container
-                context_before = prev_html[max(0, prev_open_pos - 100):prev_open_pos]
-                context_after = prev_html[prev_close_pos + len(prev_close_tag):min(len(prev_html), prev_close_pos + len(prev_close_tag) + 100)]
-                
-                # Look for similar context in current HTML
-                curr_before_pos = current_html.find(context_before[-30:]) if len(context_before) >= 30 else -1
-                curr_after_pos = current_html.find(context_after[:30]) if len(context_after) >= 30 else -1
-                
-                if curr_before_pos != -1 and curr_after_pos != -1:
-                    # Found context on both sides, extract the container in between
-                    container = current_html[curr_before_pos + len(context_before[-30:]):curr_after_pos]
-                    # Verify it's a valid container
-                    if f'<{tag}' in container and f'</{tag}>' in container:
-                        # Extract just the outermost container
-                        start = container.find(f'<{tag}')
-                        end = container.rfind(f'</{tag}>') + len(f'</{tag}>')
-                        if start != -1 and end != -1 and start < end:
-                            return container[start:end]
-            
-            return None
+            if old_normalized != new_normalized:
+                return True
+            return False
 
-        # Find the blocks that need to be translated
-        blocks_to_translate = find_changed_blocks(prev_page_content, current_page_content)
-        
-        # Function to translate a block
-        def translate_block(block, block_index, total_blocks):
-            log_with_time(f"Translating block {block_index+1}/{total_blocks} ({len(block)} characters)")
+        # Function to translate a specific div
+        def translate_div(div_content):
+            log_with_time(f"Translating div ({len(div_content)} characters)")
             
-            translation_start = time.time()
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": "Translate the given HTML content into French while keeping all HTML tags and structure intact. Use widely accepted French football terminology. Maintain authenticity and precision without altering the original meaning. Output only the translations without any additional text or markdown."},
-                    {"role": "user", "content": block}
+                    {"role": "system", "content": "Translate the following HTML div content from English to French. Maintain all HTML tags and structure intact. Use widely accepted French terminology, ensuring accuracy and natural flow. Output only the translated HTML, no explanations or additional text."},
+                    {"role": "user", "content": div_content}
                 ],
                 temperature=0.7,
             )
-            translation_end = time.time()
             
-            log_with_time(f"Block {block_index+1} translated in {(translation_end - translation_start):.2f} seconds")
+            translated_div = response.choices[0].message.content
             
-            translated_block = response.choices[0].message.content
-            if translated_block.startswith("```") and translated_block.endswith("```"):
-                translated_block = re.sub(r'^```.*\n', '', translated_block)
-                translated_block = re.sub(r'\n```$', '', translated_block)
-                
-            return translated_block
-        
-        # Update the fr.json file
-        if len(blocks_to_translate) == 1 and blocks_to_translate[0] == current_page_content:
-            # If we're translating the entire content
-            log_with_time("Translating the entire page content")
-            if len(current_page_content) > 6000:
-                # Process large content in chunks as in the original script
-                # (Code for chunking large content would go here, similar to the original)
-                # ...
-                log_with_time("Content is large, processing in batches")
-                
-                # Split content into manageable chunks based on HTML structure
-                chunks = []
-                current_position = 0
-                
-                # Function to find a good split point
-                def find_split_point(text, start_pos, chunk_size=6000):
-                    end_pos = min(start_pos + chunk_size, len(text))
-                    if end_pos >= len(text):
-                        return len(text)
-                    
-                    # Look for end of section/div tags as good split points
-                    for marker in ['</section>', '</div>']:
-                        marker_pos = text.rfind(marker, start_pos, end_pos)
-                        if marker_pos != -1:
-                            return marker_pos + len(marker)
-                    
-                    # If no good split point found, look for end of paragraph
-                    paragraph_end = text.rfind('</p>', start_pos, end_pos)
-                    if paragraph_end != -1:
-                        return paragraph_end + 4
-                    
-                    # Fallback to sentence end
-                    for punct in ['. ', '! ', '? ']:
-                        punct_pos = text.rfind(punct, start_pos, end_pos)
-                        if punct_pos != -1:
-                            return punct_pos + 2
-                    
-                    # Last resort: just split at chunk_size
-                    return end_pos
-                
-                # Split content into chunks
-                while current_position < len(current_page_content):
-                    split_point = find_split_point(current_page_content, current_position)
-                    chunk = current_page_content[current_position:split_point]
-                    chunks.append(chunk)
-                    current_position = split_point
-                
-                log_with_time(f"Split content into {len(chunks)} chunks")
-                
-                # Translate each chunk separately
-                translated_chunks = []
-                for i, chunk in enumerate(chunks):
-                    translated_chunk = translate_block(chunk, i, len(chunks))
-                    translated_chunks.append(translated_chunk)
-                
-                # Combine all translated chunks
-                log_with_time("Combining all translated chunks")
-                translated_content = "".join(translated_chunks)
-            else:
-                # Translate the whole content at once
-                translated_content = translate_block(current_page_content, 0, 1)
-        else:
-            # If we're translating specific blocks
-            log_with_time(f"Translating {len(blocks_to_translate)} modified container blocks")
+            # Clean up response if needed
+            if translated_div.startswith("```html") and translated_div.endswith("```"):
+                translated_div = translated_div[7:-3].strip()
             
-            # Start with the current translation if available
-            if translation_base:
-                log_with_time("Using existing French translation as base")
-                translated_content = translation_base
-            else:
-                # If no existing translation, translate everything
-                log_with_time("No existing translation found, translating everything")
-                translated_content = translate_block(current_page_content, 0, 1)
-                
-            # Translate each modified block and update the content
-            for i, block in enumerate(blocks_to_translate):
-                if translation_base:  # Only attempt to replace if we have a base translation
-                    translated_block = translate_block(block, i, len(blocks_to_translate))
-                    
-                    # Find where this block should go in the original content
-                    block_start = current_page_content.find(block)
-                    if block_start != -1:
-                        log_with_time(f"Found position of container block {i+1} in original content")
-                        
-                        # Find the same container in the translated content
-                        # First extract the HTML structure (tags only) to make matching more reliable
-                        block_structure = re.sub(r'>([^<]+)<', '><', block)
-                        translated_structure = re.sub(r'>([^<]+)<', '><', translation_base)
-                        
-                        structure_pos = translated_structure.find(block_structure)
-                        if structure_pos != -1:
-                            # Found matching structure in translated content
-                            log_with_time(f"Found matching HTML structure in translated content for block {i+1}")
-                            
-                            # Extract the matching section from the translated content
-                            translated_match_start = translated_structure.find(block_structure)
-                            translated_match_end = translated_match_start + len(block_structure) 
-                            
-                            # Replace just this container with the new translation
-                            log_with_time(f"Replacing container in translated content for block {i+1}")
-                            translated_content = translation_base[:translated_match_start] + translated_block + translation_base[translated_match_end:]
-                            continue
-                        
-                        # If structure matching fails, try to find it based on surrounding content
-                        # Look for unique content before and after the block
-                        context_before = current_page_content[max(0, block_start-100):block_start]
-                        context_after = current_page_content[block_start+len(block):min(len(current_page_content), block_start+len(block)+100)]
-                        
-                        # Extract unique HTML tags or patterns 
-                        before_tag = re.search(r'<[^>]+>[^<]*$', context_before)
-                        after_tag = re.search(r'^[^>]*<[^>]+>', context_after)
-                        
-                        if before_tag and after_tag:
-                            before_pattern = before_tag.group(0)
-                            after_pattern = after_tag.group(0)
-                            
-                            # Find these patterns in the translated content
-                            before_pos = translation_base.find(before_pattern)
-                            after_pos = translation_base.find(after_pattern, before_pos + 1 if before_pos != -1 else 0)
-                            
-                            if before_pos != -1 and after_pos != -1:
-                                log_with_time(f"Found surrounding content markers for block {i+1}")
-                                # Replace just the content between these markers
-                                translated_content = translation_base[:before_pos + len(before_pattern)] + translated_block + translation_base[after_pos:]
-                                continue
-                        
-                        # Last resort: Use a ratio approach but only for this specific container
-                        log_with_time(f"Using fallback approach for block {i+1}")
-                        ratio = len(translation_base) / len(current_page_content)
-                        approx_start = int(block_start * ratio)
-                        approx_length = int(len(block) * ratio)
-                        
-                        # Try to find HTML tag boundaries around this position
-                        # Look for the closest tag boundaries
-                        tag_start = max(0, approx_start - 50)
-                        tag_end = min(len(translation_base), approx_start + approx_length + 50)
-                        
-                        # Find opening and closing tags
-                        opening_tag_pos = -1
-                        closing_tag_pos = -1
-                        
-                        # Extract the first part of the block's opening tag
-                        block_opening_match = re.match(r'<([a-z][a-z0-9]*)[^>]*>', block)
-                        if block_opening_match:
-                            # Look for a matching tag in the translation
-                            tag_name = block_opening_match.group(1)
-                            opening_pattern = f'<{tag_name}[^>]*>'
-                            closing_pattern = f'</{tag_name}>'
-                            
-                            # Find a matching opening tag near the estimated position
-                            opening_tags = list(re.finditer(opening_pattern, translation_base[tag_start:tag_end]))
-                            if opening_tags:
-                                # Take the middle match if multiple exist
-                                middle_match = opening_tags[len(opening_tags)//2]
-                                opening_tag_pos = tag_start + middle_match.start()
-                                
-                                # Find the corresponding closing tag
-                                closing_pos = translation_base.find(closing_pattern, opening_tag_pos)
-                                if closing_pos != -1:
-                                    closing_tag_pos = closing_pos + len(closing_pattern)
-                        
-                        if opening_tag_pos != -1 and closing_tag_pos != -1:
-                            log_with_time(f"Found tag boundaries for block {i+1}")
-                            translated_content = translation_base[:opening_tag_pos] + translated_block + translation_base[closing_tag_pos:]
-                        else:
-                            # Absolute last resort - direct replacement around estimated position
-                            log_with_time(f"Using direct replacement for block {i+1}")
-                            safe_start = max(0, approx_start)
-                            safe_end = min(len(translation_base), approx_start + approx_length)
-                            translated_content = translation_base[:safe_start] + translated_block + translation_base[safe_end:]
+            return translated_div
 
-        # Create the fr.json file
-        log_with_time("Creating fr.json file")
-        fr_data = {
-            "common": {"nav": {"players": "Joueurs","pro": "Pro","teams": "Équipes"}},
-            "meta": {"title": "DataMB | Guide","description": "Explication des outils, des statistiques et de la méthodologie utilisés par DataMB"},
-            "search": {"placeholder": "Cherchez une équipe ou joueur..."},
-            "page-content": translated_content
-        }
-        
+        # If this is the first run or there's no previous version, translate everything
+        if not previous_content or not french_content:
+            log_with_time("No previous English or French content - translating entire page content")
+            
+            # Parse the HTML to get all divs
+            soup = BeautifulSoup(current_content, 'lxml')
+            divs = soup.find_all('div')
+            
+            translated_divs = {}
+            for i, div in enumerate(divs):
+                div_str = str(div)
+                div_id = div.get('id', f"div_{i}")
+                log_with_time(f"Translating div {i+1}/{len(divs)} (id: {div_id})")
+                translated_divs[div_str] = translate_div(div_str)
+            
+            # Replace all divs in the content
+            translated_content = current_content
+            for orig, translated in translated_divs.items():
+                translated_content = translated_content.replace(orig, translated)
+            
+            fr_data['page-content'] = translated_content
+        else:
+            # Find differences between old and new content
+            log_with_time("Detecting changes between previous and current content")
+            
+            # Initialize BeautifulSoup for both versions
+            old_soup = BeautifulSoup(previous_content, 'lxml')
+            new_soup = BeautifulSoup(current_content, 'lxml')
+            fr_soup = BeautifulSoup(french_content, 'lxml')
+            
+            # Extract all divs and compare them
+            old_divs = {div.get('id', str(i)): str(div) for i, div in enumerate(old_soup.find_all('div'))}
+            new_divs = {div.get('id', str(i)): str(div) for i, div in enumerate(new_soup.find_all('div'))}
+            
+            # Identify divs that have changed
+            changed_divs = []
+            for div_id, new_div in new_divs.items():
+                old_div = old_divs.get(div_id, '')
+                if old_div and detect_changes(old_div, new_div):
+                    log_with_time(f"Detected change in div with id/index: {div_id}")
+                    changed_divs.append((div_id, new_div))
+                elif not old_div:
+                    log_with_time(f"New div found with id/index: {div_id}")
+                    changed_divs.append((div_id, new_div))
+            
+            # Also check for deleted divs
+            for div_id in old_divs:
+                if div_id not in new_divs:
+                    log_with_time(f"Div removed with id/index: {div_id}")
+            
+            # Translate changed divs
+            translated_divs = {}
+            for div_id, div_content in changed_divs:
+                translated_divs[div_content] = translate_div(div_content)
+            
+            # Apply translations to the French content
+            translated_content = current_content
+            for orig, translated in translated_divs.items():
+                translated_content = translated_content.replace(orig, translated)
+            
+            fr_data['page-content'] = translated_content
+            
+        # Write the updated French translation
+        log_with_time("Writing updated fr.json file")
         os.makedirs('locales', exist_ok=True)
         with open('locales/fr.json', 'w', encoding='utf-8') as json_file:
             json.dump(fr_data, json_file, ensure_ascii=False, indent=2)
-
-        total_time = time.time() - start_time
-        log_with_time(f"Translated content saved to locales/fr.json. Total execution time: {total_time:.2f} seconds")
+            
+        log_with_time("Translation complete!")
         EOL
 
-        python translate_to_french.py
+        python translate_changes.py
 
     - name: Commit and push French translation
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         git add locales/fr.json
-        git diff --quiet && git diff --staged --quiet || git commit -m "Auto-translate xx.json to French"
+        git diff --quiet && git diff --staged --quiet || git commit -m "Auto-translate changes in xx.json to French"
         git push
 
     - name: Checkout proguide repo
@@ -572,6 +249,6 @@ jobs:
         cp $GITHUB_WORKSPACE/locales/fr.json locales/
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
-        git add index.html locales/fr.json
-        git diff --quiet && git diff --staged --quiet || git commit -m "Auto-translate xx.json to French"
+        git add locales/fr.json
+        git diff --quiet && git diff --staged --quiet || git commit -m "Auto-translate changes in xx.json to French"
         git push
