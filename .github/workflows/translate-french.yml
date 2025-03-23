@@ -33,7 +33,7 @@ jobs:
         cat > translate_to_french.py << 'EOL'
         import json
         import os
-        import openai
+        from openai import OpenAI  # Import the new OpenAI client
 
         # Load the en.json file
         with open('locales/en.json', 'r', encoding='utf-8') as file:
@@ -45,11 +45,11 @@ jobs:
             raise Exception("No 'page-content' found in en.json")
 
         # Initialize OpenAI API
-        openai.api_key = os.getenv('OPENAI_API_KEY')
+        client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))  # Use the new client
 
         # Translate the content to French
-        response = openai.ChatCompletion.create(
-            model="gpt-4",  # Use "gpt-4" or "gpt-3.5-turbo"
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",  # Use "gpt-4" or "gpt-3.5-turbo"
             messages=[
                 {"role": "system", "content": "Translate the given JSON HTML content into French while keeping all JSON HTML tags and structure intact. Use widely accepted French football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning."},
                 {"role": "user", "content": page_content}
@@ -58,7 +58,7 @@ jobs:
         )
 
         # Extract the translated content
-        translated_content = response['choices'][0]['message']['content']
+        translated_content = response.choices[0].message.content
 
         # Create the fr.json file
         fr_data = {"page-content": translated_content}
