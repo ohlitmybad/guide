@@ -106,12 +106,12 @@ jobs:
         # Create JSON object for guide - using only the inner content
         guide_json_obj = {"page-content": inner_content}
         
-        # Write to guide en.json
+        # Write to guide xx.json
         os.makedirs('guide/locales', exist_ok=True)
-        with open('guide/locales/en.json', 'w', encoding='utf-8') as json_file:
+        with open('guide/locales/xx.json', 'w', encoding='utf-8') as json_file:
             json.dump(guide_json_obj, json_file, ensure_ascii=False, indent=2)
         
-        print("Updated guide/locales/en.json successfully!")
+        print("Updated guide/locales/xx.json successfully!")
         
         # Now process proguide repo
         print("Processing proguide repo...")
@@ -184,12 +184,12 @@ jobs:
         # Create JSON object for proguide (same content as guide)
         proguide_json_obj = {"page-content": inner_content}
         
-        # Write to proguide en.json
+        # Write to proguide xx.json
         os.makedirs('proguide/locales', exist_ok=True)
-        with open('proguide/locales/en.json', 'w', encoding='utf-8') as json_file:
+        with open('proguide/locales/xx.json', 'w', encoding='utf-8') as json_file:
             json.dump(proguide_json_obj, json_file, ensure_ascii=False, indent=2)
         
-        print("Updated proguide/locales/en.json successfully!")
+        print("Updated proguide/locales/xx.json successfully!")
         EOL
         
         python sync_repos.py
@@ -199,8 +199,8 @@ jobs:
         cd guide
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
-        git add locales/en.json
-        git diff --quiet && git diff --staged --quiet || git commit -m "Update en.json automatically"
+        git add locales/xx.json
+        git diff --quiet && git diff --staged --quiet || git commit -m "Update xx.json automatically"
         git push
         
     - name: Commit and push proguide changes
@@ -208,6 +208,6 @@ jobs:
         cd proguide
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
-        git add index.html locales/en.json
+        git add index.html locales/xx.json
         git diff --quiet && git diff --staged --quiet || git commit -m "Sync content from guide repo"
         git push
