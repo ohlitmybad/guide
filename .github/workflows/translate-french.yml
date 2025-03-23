@@ -104,26 +104,42 @@ jobs:
             start = max(0, line_index - context_lines)
             end = min(len(lines), line_index + context_lines + 1)
             
-            # Expand to find complete HTML tags
+            # Expand to find complete HTML tags, but with a limit
             block = '\n'.join(lines[start:end])
             
             # Try to include complete HTML elements by finding matching tags
             open_tags = re.findall(r'<([a-zA-Z][a-zA-Z0-9]*)(?:\s[^>]*)?>', block)
             close_tags = re.findall(r'</([a-zA-Z][a-zA-Z0-9]*)>', block)
             
+            # Only expand up to a reasonable limit (max 20 lines in each direction)
+            max_expansion = 20
+            expansion_count = 0
+            
             # Check if we need to expand to include complete HTML elements
-            while start > 0 and len(open_tags) > len(close_tags):
+            while start > 0 and len(open_tags) > len(close_tags) and expansion_count < max_expansion:
                 start -= 1
                 block = lines[start] + '\n' + block
                 open_tags = re.findall(r'<([a-zA-Z][a-zA-Z0-9]*)(?:\s[^>]*)?>', block)
                 close_tags = re.findall(r'</([a-zA-Z][a-zA-Z0-9]*)>', block)
+                expansion_count += 1
             
-            while end < len(lines) and len(open_tags) > len(close_tags):
+            expansion_count = 0
+            while end < len(lines) and len(open_tags) > len(close_tags) and expansion_count < max_expansion:
                 block = block + '\n' + lines[end]
                 end += 1
                 open_tags = re.findall(r'<([a-zA-Z][a-zA-Z0-9]*)(?:\s[^>]*)?>', block)
                 close_tags = re.findall(r'</([a-zA-Z][a-zA-Z0-9]*)>', block)
+                expansion_count += 1
             
+            # If we still don't have balanced tags, just use a more targeted approach
+            if len(open_tags) != len(close_tags):
+                # Fallback to a more restricted context
+                log_with_time(f"Could not find balanced HTML tags, using restricted context")
+                start = max(0, line_index - 10)
+                end = min(len(lines), line_index + 11)
+                block = '\n'.join(lines[start:end])
+            
+            log_with_time(f"Extracted block spans {end-start} lines from {start} to {end}")
             return block, start, end
 
         # Process changes and translate affected blocks
@@ -268,7 +284,7 @@ jobs:
                         break  # We've replaced everything, so we can exit the loop
         else:
             log_with_time("No differences found between versions")
-
+            
         # If no changes were detected or fr.json doesn't exist yet, create it from the full xx.json
         if not changes_found or not os.path.exists('locales/fr.json'):
             log_with_time("No changes found or fr.json doesn't exist, translating entire content")
