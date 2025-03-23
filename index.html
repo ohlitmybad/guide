@@ -2112,56 +2112,56 @@ function _0x5707(_0xd20fa7,_0x4d36b5){const _0x4dcd69=_0x4dcd();return _0x5707=f
       return;
     }
 
-	fetch(`locales/${language}.json`)
+	  fetch(`locales/${language}.json`)
     .then(response => {
-        if (!response.ok) {
-            console.error('Failed to fetch translations:', response.statusText);
-            return null;
-        }
-        return response.json().catch(error => {
-            console.error('Failed to parse JSON:', error);
-            return null;
-        });
+        // Don't throw an error, just return null if response is not OK
+        return response.ok ? response.json() : null;
     })
     .then(translations => {
-        if (!translations) {
-            console.error('No translations found or JSON is invalid.');
-            return;
-        }
-
-        document.querySelectorAll('[data-i18n]').forEach(element => {
-            const keys = element.getAttribute('data-i18n').split('.');
-            let value = translations;
-            for (const key of keys) {
-                if (value === undefined || value === null) break;
-                value = value[key];
-            }
-            if (value) {
-                const unescapedValue = value.replace(/\\u([\d\w]{4})/gi, (match, grp) => String.fromCharCode(parseInt(grp, 16)));
-
-                if (element.tagName === 'META') {
-                    element.setAttribute('content', unescapedValue);
-                } else if (element.tagName === 'INPUT') {
-                    element.setAttribute('placeholder', unescapedValue);
-                } else if (unescapedValue.includes('<')) {
-                    const sanitizedHTML = DOMPurify.sanitize(unescapedValue);
-                    const tempContainer = document.createElement('div');
-                    tempContainer.innerHTML = sanitizedHTML;
-                    element.replaceWith(...tempContainer.childNodes);
-                } else {
-                    element.textContent = unescapedValue;
+        // Only proceed if translations exist
+        if (translations) {
+            document.querySelectorAll('[data-i18n]').forEach(element => {
+                const keys = element.getAttribute('data-i18n').split('.');
+                let value = translations;
+                for (const key of keys) {
+                    if (value === undefined || value === null) break;
+                    value = value[key];
                 }
-            }
-        });
+                if (value) {
+                    // Unescape special characters
+                    const unescapedValue = value.replace(/\\u([\d\w]{4})/gi, (match, grp) => String.fromCharCode(parseInt(grp, 16)));
 
-        const languageMeta = document.querySelector('meta[name="language"]');
-        if (languageMeta) {
-            languageMeta.setAttribute('content', language);
+                    if (element.tagName === 'META') {
+                        element.setAttribute('content', unescapedValue);
+                    } else if (element.tagName === 'INPUT') {
+                        element.setAttribute('placeholder', unescapedValue);
+                    } else if (unescapedValue.includes('<')) {
+                        // Sanitize and parse the HTML
+                        const sanitizedHTML = DOMPurify.sanitize(unescapedValue);
+
+                        // Create a temporary container to parse the HTML
+                        const tempContainer = document.createElement('div');
+                        tempContainer.innerHTML = sanitizedHTML;
+
+                        // Replace the target element with the parsed content
+                        element.replaceWith(...tempContainer.childNodes);
+                    } else {
+                        // Insert plain text
+                        element.textContent = unescapedValue;
+                    }
+                }
+            });
+
+            // REMOVE FOR PAGES WITH NO METADATA
+            const languageMeta = document.querySelector('meta[name="language"]');
+            if (languageMeta) {
+                languageMeta.setAttribute('content', language);
+            }
         }
     })
     .catch(() => {
         // Completely empty catch block to silently ignore any errors
-      });
+    });
   }
   const preferredLanguage = getPreferredLanguage();
   applyLanguage(preferredLanguage);
