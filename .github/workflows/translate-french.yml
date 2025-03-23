@@ -26,7 +26,6 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install openai
-        # difflib is a built-in Python module, no need to install it
 
     - name: Translate changes in xx.json to French
       env:
@@ -39,9 +38,7 @@ jobs:
         import time
         import sys
         import subprocess
-        import difflib
         from openai import OpenAI
-        import re
 
         # Function to log with timestamps
         def log_with_time(message):
@@ -61,7 +58,7 @@ jobs:
             )
             previous_xx = json.loads(previous_content)
         except subprocess.CalledProcessError:
-            log_with_time("Could not find previous version, creating new fr.json from scratch")
+            log_with_time("Could not find previous version, will create new fr.json from scratch")
             previous_xx = {"page-content": ""}
 
         # Load current xx.json
@@ -69,11 +66,7 @@ jobs:
         with open('locales/xx.json', 'r', encoding='utf-8') as file:
             current_xx = json.load(file)
 
-        # Extract the page-content from both versions
-        previous_content = previous_xx.get('page-content', '')
-        current_content = current_xx.get('page-content', '')
-
-        # Check if fr.json already exists
+        # Load existing fr.json if it exists
         fr_data = {"common": {"nav": {"players": "Joueurs","pro": "Pro","teams": "Équipes"}},
                 "meta": {"title": "DataMB | Guide","description": "Explication des outils, des statistiques et de la méthodologie utilisés par DataMB"},
                 "search": {"placeholder": "Cherchez une équipe ou joueur..."},
@@ -88,223 +81,147 @@ jobs:
         log_with_time("Initializing OpenAI API client")
         client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
-        # Find differences between previous and current content
-        log_with_time("Finding differences between previous and current content")
-        
-        # Split content into lines for comparison
-        prev_lines = previous_content.splitlines()
-        curr_lines = current_content.splitlines()
-        
-        # Use difflib to identify changes
-        diff = list(difflib.unified_diff(prev_lines, curr_lines, n=3))
-        
-        # Helper to extract html block from context
-        def get_html_block(lines, line_index, context_lines=5):
-            """Extract an HTML block around the changed line with context"""
-            start = max(0, line_index - context_lines)
-            end = min(len(lines), line_index + context_lines + 1)
+        # Simple approach: if this is the first run or there's no fr.json, translate everything
+        if not os.path.exists('locales/fr.json') or not fr_data.get('page-content'):
+            log_with_time("No existing fr.json found, translating entire content")
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "Translate the given HTML content from English to French. Keep all HTML tags and structure intact. Use widely accepted French football terminology."},
+                    {"role": "user", "content": current_xx['page-content']}
+                ],
+                temperature=0.7,
+            )
+            fr_data['page-content'] = response.choices[0].message.content.strip()
             
-            # Expand to find complete HTML tags, but with a limit
-            block = '\n'.join(lines[start:end])
-            
-            # Try to include complete HTML elements by finding matching tags
-            open_tags = re.findall(r'<([a-zA-Z][a-zA-Z0-9]*)(?:\s[^>]*)?>', block)
-            close_tags = re.findall(r'</([a-zA-Z][a-zA-Z0-9]*)>', block)
-            
-            # Only expand up to a reasonable limit (max 20 lines in each direction)
-            max_expansion = 20
-            expansion_count = 0
-            
-            # Check if we need to expand to include complete HTML elements
-            while start > 0 and len(open_tags) > len(close_tags) and expansion_count < max_expansion:
-                start -= 1
-                block = lines[start] + '\n' + block
-                open_tags = re.findall(r'<([a-zA-Z][a-zA-Z0-9]*)(?:\s[^>]*)?>', block)
-                close_tags = re.findall(r'</([a-zA-Z][a-zA-Z0-9]*)>', block)
-                expansion_count += 1
-            
-            expansion_count = 0
-            while end < len(lines) and len(open_tags) > len(close_tags) and expansion_count < max_expansion:
-                block = block + '\n' + lines[end]
-                end += 1
-                open_tags = re.findall(r'<([a-zA-Z][a-zA-Z0-9]*)(?:\s[^>]*)?>', block)
-                close_tags = re.findall(r'</([a-zA-Z][a-zA-Z0-9]*)>', block)
-                expansion_count += 1
-            
-            # If we still don't have balanced tags, just use a more targeted approach
-            if len(open_tags) != len(close_tags):
-                # Fallback to a more restricted context
-                log_with_time(f"Could not find balanced HTML tags, using restricted context")
-                start = max(0, line_index - 10)
-                end = min(len(lines), line_index + 11)
-                block = '\n'.join(lines[start:end])
-            
-            log_with_time(f"Extracted block spans {end-start} lines from {start} to {end}")
-            return block, start, end
-
-        # Process changes and translate affected blocks
-        changes_found = False
-        processed_blocks = set()  # Track blocks we've already processed
-        
-        if len(diff) > 0:
-            log_with_time(f"Found {len(diff)} difference lines in the diff")
-            
-            # Extract changed lines (lines starting with + or -)
-            changed_line_indices = []
-            current_hunk_start = 0
-            current_hunk_offset = 0
-            
-            for i, line in enumerate(diff):
-                # Check if this is a diff header line (starting with @@)
-                if line.startswith('@@'):
-                    # Parse the header line to extract line numbers
-                    # Format is typically: @@ -old_start,old_count +new_start,new_count @@
-                    header_match = re.search(r'@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@', line)
-                    if header_match:
-                        current_hunk_start = int(header_match.group(1)) - 1
-                        current_hunk_offset = 0
+            # Clean up any code block formatting that might be returned
+            if fr_data['page-content'].startswith("```") and fr_data['page-content'].endswith("```"):
+                fr_data['page-content'] = fr_data['page-content'].split("```")[1].strip()
                 
-                elif line.startswith('+') and not line.startswith('+++') and not re.match(r'^\+\s*$', line):
-                    # This is an added line that's not just whitespace
-                    changed_line_indices.append(current_hunk_start + current_hunk_offset)
-                    current_hunk_offset += 1
-                elif line.startswith('-') and not line.startswith('---') and not re.match(r'^-\s*$', line):
-                    # This is a removed line that's not just whitespace
-                    # Don't increment offset for removed lines as they don't exist in the new file
-                    pass
-                else:
-                    # Context line or other line
-                    current_hunk_offset += 1
-            
-            log_with_time(f"Found {len(changed_line_indices)} lines with actual content changes")
-            
-            # Process each changed line
-            for line_index in changed_line_indices:
-                # Skip if line_index is out of bounds
-                if line_index >= len(curr_lines):
-                    continue
-                    
-                # Get the HTML block containing the change
-                html_block, start, end = get_html_block(curr_lines, line_index)
+            log_with_time("Complete translation done")
+        else:
+            # Compare the previous and current content to identify changes
+            if previous_xx.get('page-content') != current_xx.get('page-content'):
+                log_with_time("Changes detected in xx.json, identifying specific changes")
                 
-                # Create a unique identifier for this block to avoid duplicates
-                block_id = f"{start}-{end}"
-                if block_id in processed_blocks:
-                    continue
-                processed_blocks.add(block_id)
+                # Extract chunks from the current content
+                current_content = current_xx.get('page-content', '')
                 
-                log_with_time(f"Processing change in lines {start}-{end}")
+                # Break the content into paragraphs or HTML elements for comparison
+                chunks = []
+                current_chunk = ""
+                for line in current_content.splitlines():
+                    current_chunk += line + "\n"
+                    # Use closing tags as chunk boundaries
+                    if "</div>" in line or "</section>" in line or "</p>" in line:
+                        chunks.append(current_chunk.strip())
+                        current_chunk = ""
                 
-                # Translate the changed HTML block
-                translation_start = time.time()
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "Translate the given HTML content from English to French. Keep all HTML tags and structure intact. Use widely accepted French football terminology. Output only the translated content with no additional text or explanation."},
-                        {"role": "user", "content": html_block}
-                    ],
-                    temperature=0.7,
-                )
-                translation_end = time.time()
+                # Add any remaining content as a final chunk
+                if current_chunk.strip():
+                    chunks.append(current_chunk.strip())
                 
-                translated_block = response.choices[0].message.content.strip()
-                if translated_block.startswith("```") and translated_block.endswith("```"):
-                    translated_block = re.sub(r'^```(?:html)?\n', '', translated_block)
-                    translated_block = re.sub(r'\n```$', '', translated_block)
+                log_with_time(f"Split content into {len(chunks)} chunks")
                 
-                log_with_time(f"Block translated in {(translation_end - translation_start):.2f} seconds")
+                # Compare each chunk with the previous content to see if it changed
+                prev_content = previous_xx.get('page-content', '')
+                fr_content = fr_data.get('page-content', '')
                 
-                # Now we need to update the French content by replacing this block
-                if 'page-content' in fr_data:
-                    # If we have existing French content
-                    fr_content_lines = fr_data['page-content'].splitlines()
-                    
-                    # Try to find a similar block in the French content
-                    if len(fr_content_lines) > 0:
-                        # Use difflib to find the best match for the original block
-                        matcher = difflib.SequenceMatcher(None, html_block, fr_data['page-content'])
-                        match = matcher.find_longest_match(0, len(html_block), 0, len(fr_data['page-content']))
+                changes_made = False
+                for i, chunk in enumerate(chunks):
+                    # Skip very small chunks as they might be just HTML tags
+                    if len(chunk) < 30:
+                        continue
                         
-                        if match.size > 50:  # If we found a significant match
-                            start_in_fr = fr_data['page-content'].rfind('\n', 0, match.b) + 1
-                            if start_in_fr == 0:
-                                start_in_fr = 0
-                            end_in_fr = fr_data['page-content'].find('\n', match.b + match.size)
-                            if end_in_fr == -1:
-                                end_in_fr = len(fr_data['page-content'])
-                            
-                            # Replace the matched section in French content
-                            fr_data['page-content'] = fr_data['page-content'][:start_in_fr] + translated_block + fr_data['page-content'][end_in_fr:]
-                            changes_found = True
-                        else:
-                            # If no good match found, we'll need a different strategy
-                            # For simplicity, in this case, just replace the entire content
-                            # A more sophisticated approach would be to maintain a mapping between English and French sections
-                            log_with_time("No matching section found in fr.json, using full content from xx.json")
-                            translation_start = time.time()
-                            response = client.chat.completions.create(
-                                model="gpt-4o-mini",
-                                messages=[
-                                    {"role": "system", "content": "Translate the given HTML content from English to French. Keep all HTML tags and structure intact. Use widely accepted French football terminology. Output only the translated content with no additional text or explanation."},
-                                    {"role": "user", "content": current_content}
-                                ],
-                                temperature=0.7,
-                            )
-                            translation_end = time.time()
-                            
-                            full_translated_content = response.choices[0].message.content.strip()
-                            if full_translated_content.startswith("```") and full_translated_content.endswith("```"):
-                                full_translated_content = re.sub(r'^```(?:html)?\n', '', full_translated_content)
-                                full_translated_content = re.sub(r'\n```$', '', full_translated_content)
-                            
-                            fr_data['page-content'] = full_translated_content
-                            changes_found = True
-                            break  # We've replaced everything, so we can exit the loop
-                    else:
-                        # If fr.json is empty, we'll need to translate the full content
-                        log_with_time("fr.json is empty, translating full content from xx.json")
-                        translation_start = time.time()
+                    # If this chunk exists in the previous content, skip it
+                    if chunk in prev_content:
+                        log_with_time(f"Chunk {i+1} unchanged, skipping")
+                        continue
+                    
+                    # This chunk is new or modified, translate it
+                    log_with_time(f"Translating chunk {i+1}")
+                    translation_start = time.time()
+                    
+                    response = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": "Translate the given HTML content from English to French. Keep all HTML tags and structure intact. Use widely accepted French football terminology."},
+                            {"role": "user", "content": chunk}
+                        ],
+                        temperature=0.7,
+                    )
+                    
+                    translated_chunk = response.choices[0].message.content.strip()
+                    if translated_chunk.startswith("```") and translated_chunk.endswith("```"):
+                        translated_chunk = translated_chunk.split("```")[1].strip()
+                    
+                    translation_end = time.time()
+                    log_with_time(f"Chunk translated in {(translation_end - translation_start):.2f} seconds")
+                    
+                    # Try to find where to insert the translated chunk in the French content
+                    # First, see if we can find this chunk's context in the current English content
+                    chunk_start = current_content.find(chunk)
+                    if chunk_start > 0:
+                        # Get some context before the chunk
+                        context_before = current_content[max(0, chunk_start-100):chunk_start]
+                        # Look for the same context in the previous English content
+                        prev_context_pos = prev_content.find(context_before)
+                        
+                        if prev_context_pos >= 0:
+                            # If found, look for the same context in the French content
+                            fr_context_pos = fr_content.find(context_before)
+                            if fr_context_pos >= 0:
+                                # Insert the translated chunk right after this context
+                                insertion_point = fr_context_pos + len(context_before)
+                                fr_data['page-content'] = fr_content[:insertion_point] + translated_chunk + fr_content[insertion_point:]
+                                changes_made = True
+                                continue
+                    
+                    # If we can't find a good insertion point, append to the end
+                    log_with_time(f"Could not find exact insertion point for chunk {i+1}, appending to translation")
+                    
+                    # If we're dealing with the first chunk and no good match found, 
+                    # it might be a total replacement
+                    if i == 0 and not changes_made:
+                        log_with_time("First chunk changed significantly, re-translating entire content")
                         response = client.chat.completions.create(
                             model="gpt-4o-mini",
                             messages=[
-                                {"role": "system", "content": "Translate the given HTML content from English to French. Keep all HTML tags and structure intact. Use widely accepted French football terminology. Output only the translated content with no additional text or explanation."},
+                                {"role": "system", "content": "Translate the given HTML content from English to French. Keep all HTML tags and structure intact. Use widely accepted French football terminology."},
                                 {"role": "user", "content": current_content}
                             ],
                             temperature=0.7,
                         )
-                        translation_end = time.time()
-                        
                         full_translated_content = response.choices[0].message.content.strip()
                         if full_translated_content.startswith("```") and full_translated_content.endswith("```"):
-                            full_translated_content = re.sub(r'^```(?:html)?\n', '', full_translated_content)
-                            full_translated_content = re.sub(r'\n```$', '', full_translated_content)
+                            full_translated_content = full_translated_content.split("```")[1].strip()
                         
                         fr_data['page-content'] = full_translated_content
-                        changes_found = True
-                        break  # We've replaced everything, so we can exit the loop
-        else:
-            log_with_time("No differences found between versions")
-            
-        # If no changes were detected or fr.json doesn't exist yet, create it from the full xx.json
-        if not changes_found or not os.path.exists('locales/fr.json'):
-            log_with_time("No changes found or fr.json doesn't exist, translating entire content")
-            translation_start = time.time()
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "Translate the given HTML content from English to French. Keep all HTML tags and structure intact. Use widely accepted French football terminology. Output only the translated content with no additional text or explanation."},
-                    {"role": "user", "content": current_content}
-                ],
-                temperature=0.7,
-            )
-            translation_end = time.time()
-            
-            full_translated_content = response.choices[0].message.content.strip()
-            if full_translated_content.startswith("```") and full_translated_content.endswith("```"):
-                full_translated_content = re.sub(r'^```(?:html)?\n', '', full_translated_content)
-                full_translated_content = re.sub(r'\n```$', '', full_translated_content)
-            
-            fr_data['page-content'] = full_translated_content
+                        changes_made = True
+                        break
+                    
+                    # Otherwise, just append the translated chunk
+                    fr_data['page-content'] += "\n" + translated_chunk
+                    changes_made = True
+                
+                if not changes_made:
+                    log_with_time("Content changed but no specific chunks identified for translation")
+                    # Fall back to translating the whole thing
+                    response = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": "Translate the given HTML content from English to French. Keep all HTML tags and structure intact. Use widely accepted French football terminology."},
+                            {"role": "user", "content": current_content}
+                        ],
+                        temperature=0.7,
+                    )
+                    full_translated_content = response.choices[0].message.content.strip()
+                    if full_translated_content.startswith("```") and full_translated_content.endswith("```"):
+                        full_translated_content = full_translated_content.split("```")[1].strip()
+                    
+                    fr_data['page-content'] = full_translated_content
+            else:
+                log_with_time("No changes detected in the page-content")
 
         # Create the fr.json file
         log_with_time("Saving fr.json file")
