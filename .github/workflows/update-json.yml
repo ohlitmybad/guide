@@ -49,18 +49,18 @@ jobs:
         with open('guide/index.html', 'r', encoding='utf-8') as file:
             guide_html_content = file.read()
         
-        # Extract the content of the div with data-i18n="page-content" using regex
-        # This preserves the exact whitespace and formatting
-        page_content_pattern = r'<div[^>]*data-i18n="page-content"[^>]*>(.*?)</div>'
-        match = re.search(page_content_pattern, guide_html_content, re.DOTALL)
+        # The div is the last one in the document
+        # Extract content between opening div with data-i18n="page-content" and the last closing div
+        page_content_match = re.search(r'<div[^>]*data-i18n="page-content"[^>]*>(.*)</div>$', 
+                                      guide_html_content, re.DOTALL)
         
-        if not match:
+        if not page_content_match:
             raise Exception("Could not find div with data-i18n='page-content' in guide repo")
         
-        # Extract the inner content directly from the regex match
-        guide_inner_content = match.group(1)
+        # Get the inner content
+        guide_inner_content = page_content_match.group(1)
         
-        # Create JSON object for guide
+        # Create JSON object for guide - using only the inner content
         guide_json_obj = {"page-content": guide_inner_content}
         
         # Write to guide en.json
@@ -77,13 +77,13 @@ jobs:
         with open('proguide/index.html', 'r', encoding='utf-8') as file:
             proguide_html_content = file.read()
         
-        # Replace the content of the div with data-i18n="page-content" using regex
-        updated_proguide_html = re.sub(
-            r'(<div[^>]*data-i18n="page-content"[^>]*>).*?(</div>)',
-            r'\1' + guide_inner_content + r'\2',
-            proguide_html_content,
-            flags=re.DOTALL
-        )
+        # Replace exactly between the opening page-content div and the last closing div
+        # This ensures the exact replacement at the same position
+        pattern = r'(<div[^>]*data-i18n="page-content"[^>]*>).*?(</div>$)'
+        replacement = r'\1' + guide_inner_content + r'\2'
+        
+        # Replace the content - maintaining exact same positions
+        updated_proguide_html = re.sub(pattern, replacement, proguide_html_content, flags=re.DOTALL)
         
         # Write updated HTML back to proguide index.html
         with open('proguide/index.html', 'w', encoding='utf-8') as file:
@@ -91,7 +91,7 @@ jobs:
         
         print("Updated proguide/index.html successfully!")
         
-        # Create JSON object for proguide (same as guide)
+        # Create JSON object for proguide (same content as guide)
         proguide_json_obj = {"page-content": guide_inner_content}
         
         # Write to proguide en.json
