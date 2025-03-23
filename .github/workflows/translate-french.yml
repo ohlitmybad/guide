@@ -69,7 +69,7 @@ jobs:
         log_with_time("Sending translation request to OpenAI API")
         translation_start = time.time()
         response = client.chat.completions.create(
-            model="gpt-4o-mini",  # Use "gpt-4" or "gpt-3.5-turbo"
+            model="gpt-3.5-turbo",  # Use "gpt-4" or "gpt-3.5-turbo"
             messages=[
                 {"role": "system", "content": "Translate the given JSON HTML content into French while keeping all JSON HTML tags and structure intact. Use widely accepted French football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translations of the following and that only, no extra text or markdown"},
                 {"role": "user", "content": page_content}
@@ -83,44 +83,6 @@ jobs:
         log_with_time("Extracting translated content from response")
         translated_content = response.choices[0].message.content
 
-        
-        if translated_content.startswith("```json\n") and translated_content.endswith("\n```"):
-            log_with_time("Removing code block markers from response")
-            translated_content = translated_content[7:-3].strip()  # Remove ```json\n and \n```
-
-        # Check if the translation is complete (ends with "</div> </section>")
-        log_with_time("Checking if translation is complete")
-        max_retries = 3
-        current_try = 1
-        
-        while not (translated_content.strip().endswith("</div> </section>") or translated_content.strip().endswith("</div> </section>\"")) and current_try <= max_retries:
-            log_with_time(f"Attempt {current_try}: Translation appears incomplete. Retrying...")
-            
-            # Retry the translation
-            retry_start = time.time()
-            log_with_time("Sending retry request to OpenAI API")
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "Translate the given JSON HTML content into French while keeping all JSON HTML tags and structure intact. Use widely accepted French football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translations of the following and that only, no extra text or markdown. IMPORTANT: Ensure you translate the COMPLETE content and end with '</div> </section>'"},
-                    {"role": "user", "content": page_content}
-                ],
-                temperature=0.7,
-            )
-            retry_end = time.time()
-            log_with_time(f"Received retry response from OpenAI API after {(retry_end - retry_start):.2f} seconds")
-            
-            translated_content = response.choices[0].message.content
-            
-            if translated_content.startswith("```json\n") and translated_content.endswith("\n```"):
-                translated_content = translated_content[7:-3].strip()
-                
-            current_try += 1
-            
-        if not (translated_content.strip().endswith("</div> </section>") or translated_content.strip().endswith("</div> </section>\"")):
-            log_with_time("Warning: Translation may still be incomplete after maximum retries.")
-        else:
-            log_with_time("Translation is complete!")
 
         # Create the fr.json file
         log_with_time("Creating fr.json file")
