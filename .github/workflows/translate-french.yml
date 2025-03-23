@@ -30,8 +30,6 @@ jobs:
       env:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}  # Add your OpenAI API key to GitHub Secrets
       id: translate
-      timeout-minutes: 10
-      continue-on-error: true
       run: |
         cat > translate_to_french.py << 'EOL'
         import json
@@ -90,11 +88,11 @@ jobs:
 
         # Check if the translation is complete (ends with "</div> </section>")
         log_with_time("Checking if translation is complete")
-        max_retries = 3
-        current_try = 1
+        retry_count = 0
         
-        while not (translated_content.strip().endswith("</div> </section>") or translated_content.strip().endswith("</div> </section>\"")) and current_try <= max_retries:
-            log_with_time(f"Attempt {current_try}: Translation appears incomplete. Retrying...")
+        while not (translated_content.strip().endswith("</div> </section>") or translated_content.strip().endswith("</div> </section>\"")):
+            retry_count += 1
+            log_with_time(f"Attempt {retry_count}: Translation appears incomplete. Retrying...")
             # Show how the incomplete translation ends
             last_chars = translated_content.strip()[-50:] if len(translated_content.strip()) > 50 else translated_content.strip()
             log_with_time(f"Incomplete translation ends with: '{last_chars}'")
@@ -106,7 +104,9 @@ jobs:
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": "Translate the given JSON HTML content into French while keeping all JSON HTML tags and structure intact. Use widely accepted French football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translations of the following and that only, no extra text or markdown. IMPORTANT: Ensure you translate the COMPLETE content and end with '</div> </section>'"},
-                    {"role": "user", "content": page_content}
+                    {"role": "user", "content": page_content},
+                    {"role": "assistant", "content": translated_content},
+                    {"role": "user", "content": "Your response is incomplete. Please continue from where you left off until you reach the end with '</div> </section>'. Don't start over, just continue the translation from where you stopped."}
                 ],
                 temperature=0.7,
             )
@@ -117,16 +117,8 @@ jobs:
             
             if translated_content.startswith("```json\n") and translated_content.endswith("\n```"):
                 translated_content = translated_content[7:-3].strip()
-                
-            current_try += 1
             
-        if not (translated_content.strip().endswith("</div> </section>") or translated_content.strip().endswith("</div> </section>\"")):
-            log_with_time("Warning: Translation may still be incomplete after maximum retries.")
-            # Show how the incomplete translation ends after all retries
-            last_chars = translated_content.strip()[-50:] if len(translated_content.strip()) > 50 else translated_content.strip()
-            log_with_time(f"Final incomplete translation ends with: '{last_chars}'")
-        else:
-            log_with_time("Translation is complete!")
+        log_with_time(f"Translation is complete after {retry_count} retries!")
 
         # Create the fr.json file
         log_with_time("Creating fr.json file")
@@ -141,17 +133,7 @@ jobs:
 
         python translate_to_french.py
 
-    - name: Retry translation if needed
-      if: steps.translate.outcome == 'failure' || steps.translate.outcome == 'timed_out'
-      env:
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      timeout-minutes: 10
-      run: |
-        echo "First translation attempt failed or timed out. Retrying..."
-        python translate_to_french.py
-
     - name: Commit and push French translation
-      if: steps.translate.outcome == 'success' || success()
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
