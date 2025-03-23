@@ -79,26 +79,42 @@ jobs:
             """Parse HTML and extract sections with their identifiers"""
             soup = BeautifulSoup(html_content, 'lxml')
             sections = {}
+            section_hierarchy = {}  # Track parent-child relationships
             
             # Look for elements with id attributes - these are easiest to match
             elements_with_id = soup.select('[id]')
             for element in elements_with_id:
                 section_id = element.get('id')
                 sections[section_id] = str(element)
+                
+                # Check if this element is inside another element with an id
+                for parent in element.parents:
+                    if parent.get('id') and parent.get('id') in sections:
+                        section_hierarchy[section_id] = parent.get('id')
+                        break
             
             # If no elements with id found or very few, extract by major sections
             if len(sections) < 3:
                 # Clear sections to avoid mixing strategies
                 sections = {}
+                section_hierarchy = {}
                 # Use HTML structure fingerprinting for sections
                 for i, section in enumerate(soup.find_all(['section', 'div', 'article'])):
                     # Create a fingerprint based on tag structure, classes, and attributes
-                    # This will be more reliable than position alone
                     fingerprint = create_element_fingerprint(section)
                     section_id = f"fp_{fingerprint}"
                     sections[section_id] = str(section)
+                    
+                    # Check for parent-child relationships
+                    for parent in section.parents:
+                        if parent.name in ['section', 'div', 'article']:
+                            parent_fingerprint = create_element_fingerprint(parent)
+                            parent_id = f"fp_{parent_fingerprint}"
+                            if parent_id in sections:
+                                section_hierarchy[section_id] = parent_id
+                                break
             
-            return sections
+            return sections, section_hierarchy
             
         def create_element_fingerprint(element):
             """Creates a structural fingerprint of an element that's language-independent
@@ -193,8 +209,11 @@ jobs:
 
         # Extract sections from both versions
         log_with_time("Parsing HTML and extracting sections")
-        current_sections = extract_sections(current_content)
-        previous_sections = extract_sections(previous_content)
+        current_sections, current_hierarchy = extract_sections(current_content)
+        previous_sections, previous_hierarchy = extract_sections(previous_content)
+        
+        log_with_time(f"Extracted {len(current_sections)} sections from current content")
+        log_with_time(f"Detected {len(current_hierarchy)} parent-child relationships between sections")
 
         # Identify changed sections by comparing hashes
         log_with_time("Identifying changed sections")
@@ -205,6 +224,12 @@ jobs:
             prev_hash = compute_section_hash(prev_content) if prev_content else ''
             
             if current_hash != prev_hash:
+                # Check if this section's parent has already been marked for translation
+                parent_id = current_hierarchy.get(section_id)
+                if parent_id and parent_id in sections_to_translate:
+                    log_with_time(f"Section {section_id} changed but parent {parent_id} already marked for translation, skipping to avoid duplication")
+                    continue
+                
                 log_with_time(f"Change detected in section {section_id}, will translate")
                 sections_to_translate[section_id] = content
             else:
@@ -213,7 +238,15 @@ jobs:
         # If no existing fr.json or all sections changed, translate everything
         if not os.path.exists('locales/fr.json') or not previous_content:
             log_with_time("No previous translation or complete content change, translating entire content")
-            sections_to_translate = current_sections
+            
+            # Filter out any child sections if their parent is already included
+            sections_to_translate = {
+                section_id: content 
+                for section_id, content in current_sections.items() 
+                if section_id not in current_hierarchy or current_hierarchy[section_id] not in current_sections
+            }
+            
+            log_with_time(f"After filtering nested sections, translating {len(sections_to_translate)} top-level sections")
 
         # If no sections to translate, we're done
         if not sections_to_translate:
@@ -227,8 +260,9 @@ jobs:
         # Load existing French translation if available
         existing_fr_content = fr_data.get('page-content', '')
         existing_fr_sections = {}
+        existing_fr_hierarchy = {}
         if existing_fr_content:
-            existing_fr_sections = extract_sections(existing_fr_content)
+            existing_fr_sections, existing_fr_hierarchy = extract_sections(existing_fr_content)
             log_with_time(f"Extracted {len(existing_fr_sections)} sections from existing French content")
 
         # Translate changed sections
