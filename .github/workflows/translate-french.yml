@@ -49,22 +49,48 @@ jobs:
 
         # Translate the content to French
         response = client.chat.completions.create(
-            model="o3-mini", 
+            model="o3-mini",  # Use "gpt-4" or "gpt-3.5-turbo"
             messages=[
                 {"role": "system", "content": "Translate the given JSON HTML content into French while keeping all JSON HTML tags and structure intact. Use widely accepted French football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translations of the following and that only, no extra text or markdown"},
                 {"role": "user", "content": page_content}
-            ]        )
+            ],
+        )
 
         # Extract the translated content
         translated_content = response.choices[0].message.content
 
         
         if translated_content.startswith("```json\n") and translated_content.endswith("\n```"):
-
             translated_content = translated_content[7:-3].strip()  # Remove ```json\n and \n```
 
+        # Check if the translation is complete (ends with "</div> </section>")
+        max_retries = 3
+        current_try = 1
+        
+        while not translated_content.strip().endswith("</div> </section>") and current_try <= max_retries:
+            print(f"Attempt {current_try}: Translation appears incomplete. Retrying...")
+            
+            # Retry the translation
+            response = client.chat.completions.create(
+                model="gpt-o3-mini",
+                messages=[
+                    {"role": "system", "content": "Translate the given JSON HTML content into French while keeping all JSON HTML tags and structure intact. Use widely accepted French football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translations of the following and that only, no extra text or markdown. IMPORTANT: Ensure you translate the COMPLETE content and end with '</div> </section>'"},
+                    {"role": "user", "content": page_content}
+                ],
+            )
+            
+            translated_content = response.choices[0].message.content
+            
+            if translated_content.startswith("```json\n") and translated_content.endswith("\n```"):
+                translated_content = translated_content[7:-3].strip()
+                
+            current_try += 1
+            
+        if not translated_content.strip().endswith("</div> </section>"):
+            print("Warning: Translation may still be incomplete after maximum retries.")
+
         # Create the fr.json file
-        fr_data = {"page-content": translated_content}
+        fr_data = {"common": {"nav": {"players": "Joueurs","pro": "Pro","teams": "Équipes"}},"meta": {"title": "DataMB | Guide","description": "Explication des outils, des statistiques et de la méthodologie utilisés par DataMB"},"search": {"placeholder": "Cherchez une équipe ou joueur..."},"page-content": translated_content}
         os.makedirs('locales', exist_ok=True)
         with open('locales/fr.json', 'w', encoding='utf-8') as json_file:
             json.dump(fr_data, json_file, ensure_ascii=False, indent=2)
