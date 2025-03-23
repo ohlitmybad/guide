@@ -104,8 +104,8 @@ jobs:
         print("Extracted inner content (last 100 chars):", inner_content[-100:])
         
         # Create JSON object for guide - using only the inner content
-        guide_json_obj = {"page-content": inner_content}
-        
+        guide_json_obj = {"common": {"nav": {"players": "Players","pro": "Pro","teams": "Teams"}},"meta": {"title": "DataMB | Guide","description": "Explanation of the tools, metrics, and methodology used by DataMB"},"search": {"placeholder": "Enter a team or player name..."},"page-content": inner_content}
+
         # Write to guide xx.json
         os.makedirs('guide/locales', exist_ok=True)
         with open('guide/locales/xx.json', 'w', encoding='utf-8') as json_file:
@@ -182,7 +182,7 @@ jobs:
         print("Updated proguide/index.html successfully!")
         
         # Create JSON object for proguide (same content as guide)
-        proguide_json_obj = {"page-content": inner_content}
+        proguide_json_obj = {"common": {"nav": {"players": "Players","pro": "Pro","teams": "Teams"}},"meta": {"title": "DataMB | Guide","description": "Explanation of the tools, metrics, and methodology used by DataMB"},"search": {"placeholder": "Enter a team or player name..."},"page-content": inner_content}
         
         # Write to proguide xx.json
         os.makedirs('proguide/locales', exist_ok=True)
