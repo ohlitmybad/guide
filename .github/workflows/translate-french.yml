@@ -49,7 +49,7 @@ jobs:
 
         # Translate the content to French
         response = client.chat.completions.create(
-            model="gpt-o3-mini", 
+            model="o3-mini", 
             messages=[
                 {"role": "system", "content": "Translate the given JSON HTML content into French while keeping all JSON HTML tags and structure intact. Use widely accepted French football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translations of the following and that only, no extra text or markdown"},
                 {"role": "user", "content": page_content}
