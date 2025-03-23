@@ -49,40 +49,62 @@ jobs:
         with open('guide/index.html', 'r', encoding='utf-8') as file:
             guide_html_content = file.read()
         
-        # Print first few characters to debug
-        print("First 500 chars of guide HTML:", guide_html_content[:500])
+        # Print first 2000 characters to debug
+        print("First 2000 chars of guide HTML:", guide_html_content[:2000])
         
-        # Match unquoted attribute: data-i18n=page-content
-        page_content_match = re.search(r'<div[^>]*data-i18n=page-content[^>]*>(.*)</div>$', 
-                                      guide_html_content, re.DOTALL)
+        # Find the div location
+        div_start = guide_html_content.find('<div data-i18n=page-content')
+        if div_start == -1:
+            div_start = guide_html_content.find('<div data-i18n="page-content"')
+            if div_start == -1:
+                div_start = guide_html_content.find("<div data-i18n='page-content'")
         
-        if not page_content_match:
-            # Try with quotes as fallback
-            print("Unquoted regex failed, trying with quotes...")
-            page_content_match = re.search(r'<div[^>]*data-i18n=["|\']page-content["|\'][^>]*>(.*)</div>$', 
-                                         guide_html_content, re.DOTALL)
+        if div_start == -1:
+            raise Exception("Could not find div with data-i18n='page-content' in guide repo")
+        
+        # Find the matching closing div tag (need to count opening/closing divs)
+        div_level = 0
+        pos = div_start
+        div_end = -1
+        
+        while pos < len(guide_html_content):
+            open_tag = guide_html_content.find('<div', pos)
+            close_tag = guide_html_content.find('</div>', pos)
             
-            if not page_content_match:
-                # Try with BeautifulSoup as a last resort
-                print("Regex failed, trying with BeautifulSoup...")
-                soup = BeautifulSoup(guide_html_content, 'html.parser')
-                div = soup.find('div', attrs={'data-i18n': 'page-content'})
-                if div:
-                    # Get innerHTML as string
-                    guide_inner_content = ''.join(str(c) for c in div.contents)
-                    print("Found with BeautifulSoup")
-                else:
-                    raise Exception("Could not find div with data-i18n='page-content' in guide repo")
-            else:
-                guide_inner_content = page_content_match.group(1)
-                print("Found with quoted regex")
-        else:
-            # Get the inner content
-            guide_inner_content = page_content_match.group(1)
-            print("Found with unquoted regex")
+            # If no more tags, break
+            if open_tag == -1 and close_tag == -1:
+                break
+                
+            # If we find an opening tag first
+            if open_tag != -1 and (close_tag == -1 or open_tag < close_tag):
+                div_level += 1
+                pos = open_tag + 1
+                continue
+                
+            # If we find a closing tag first
+            if close_tag != -1 and (open_tag == -1 or close_tag < open_tag):
+                div_level -= 1
+                if div_level == 0:
+                    div_end = close_tag + 6  # length of '</div>'
+                    break
+                pos = close_tag + 1
+                continue
+        
+        if div_end == -1:
+            raise Exception("Could not find matching closing div for page-content")
+        
+        # Extract the div content (including the div tags)
+        div_content = guide_html_content[div_start:div_end]
+        
+        # Extract just the inner content (without the opening and closing div tags)
+        # Find the first > after the div_start
+        first_gt = div_content.find('>')
+        inner_content = div_content[first_gt+1:-6]  # -6 for '</div>'
+        
+        print("Extracted inner content (last 100 chars):", inner_content[-100:])
         
         # Create JSON object for guide - using only the inner content
-        guide_json_obj = {"page-content": guide_inner_content}
+        guide_json_obj = {"page-content": inner_content}
         
         # Write to guide en.json
         os.makedirs('guide/locales', exist_ok=True)
@@ -98,21 +120,60 @@ jobs:
         with open('proguide/index.html', 'r', encoding='utf-8') as file:
             proguide_html_content = file.read()
         
-        # Print first few characters to debug
-        print("First 500 chars of proguide HTML:", proguide_html_content[:500])
+        # Find the div in proguide
+        proguide_div_start = proguide_html_content.find('<div data-i18n=page-content')
+        if proguide_div_start == -1:
+            proguide_div_start = proguide_html_content.find('<div data-i18n="page-content"')
+            if proguide_div_start == -1:
+                proguide_div_start = proguide_html_content.find("<div data-i18n='page-content'")
         
-        # Try unquoted pattern first
-        pattern = r'(<div[^>]*data-i18n=page-content[^>]*>).*?(</div>$)'
-        replacement = r'\1' + guide_inner_content + r'\2'
+        if proguide_div_start == -1:
+            raise Exception("Could not find div with data-i18n='page-content' in proguide repo")
         
-        # Replace the content
-        updated_proguide_html = re.sub(pattern, replacement, proguide_html_content, flags=re.DOTALL)
+        # Find the closing div tag
+        div_level = 0
+        pos = proguide_div_start
+        proguide_div_end = -1
         
-        # If no replacement happened, try with quotes
-        if updated_proguide_html == proguide_html_content:
-            print("Unquoted replacement failed, trying with quotes...")
-            pattern = r'(<div[^>]*data-i18n=["|\']page-content["|\'][^>]*>).*?(</div>$)'
-            updated_proguide_html = re.sub(pattern, replacement, proguide_html_content, flags=re.DOTALL)
+        while pos < len(proguide_html_content):
+            open_tag = proguide_html_content.find('<div', pos)
+            close_tag = proguide_html_content.find('</div>', pos)
+            
+            # If no more tags, break
+            if open_tag == -1 and close_tag == -1:
+                break
+                
+            # If we find an opening tag first
+            if open_tag != -1 and (close_tag == -1 or open_tag < close_tag):
+                div_level += 1
+                pos = open_tag + 1
+                continue
+                
+            # If we find a closing tag first
+            if close_tag != -1 and (open_tag == -1 or close_tag < open_tag):
+                div_level -= 1
+                if div_level == 0:
+                    proguide_div_end = close_tag + 6  # length of '</div>'
+                    break
+                pos = close_tag + 1
+                continue
+        
+        if proguide_div_end == -1:
+            raise Exception("Could not find matching closing div for page-content in proguide")
+        
+        # Extract the opening div tag from proguide
+        first_gt_proguide = proguide_html_content.find('>', proguide_div_start)
+        opening_div_tag = proguide_html_content[proguide_div_start:first_gt_proguide+1]
+        
+        # Create the new content - preserving the exact opening tag
+        new_content = opening_div_tag + inner_content + '</div>'
+        
+        # Replace the existing div content with the new content
+        updated_proguide_html = (
+            proguide_html_content[:proguide_div_start] + 
+            new_content + 
+            proguide_html_content[proguide_div_end:]
+        )
         
         # Write updated HTML back to proguide index.html
         with open('proguide/index.html', 'w', encoding='utf-8') as file:
@@ -121,7 +182,7 @@ jobs:
         print("Updated proguide/index.html successfully!")
         
         # Create JSON object for proguide (same content as guide)
-        proguide_json_obj = {"page-content": guide_inner_content}
+        proguide_json_obj = {"page-content": inner_content}
         
         # Write to proguide en.json
         os.makedirs('proguide/locales', exist_ok=True)
