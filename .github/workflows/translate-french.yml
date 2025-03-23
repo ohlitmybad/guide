@@ -38,6 +38,28 @@ jobs:
         import sys
         from openai import OpenAI  # Import the new OpenAI client
         import re
+        from html.parser import HTMLParser
+        
+        # HTML tag tracker to find mismatched tags
+        class HTMLTagTracker(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.tags = []
+                self.incomplete_tags = []
+                
+            def handle_starttag(self, tag, attrs):
+                if tag not in ['br', 'img', 'input', 'hr', 'meta', 'link']:  # Self-closing tags
+                    self.tags.append(tag)
+                    
+            def handle_endtag(self, tag):
+                if self.tags and self.tags[-1] == tag:
+                    self.tags.pop()
+                else:
+                    # Tag mismatch - either closing tag without opening or wrong order
+                    self.incomplete_tags.append(f"Unexpected closing tag: {tag}")
+                    
+            def get_unclosed_tags(self):
+                return self.tags[::-1]  # Return in reverse order for proper closing
 
         # Function to log with timestamps
         def log_with_time(message):
@@ -75,39 +97,78 @@ jobs:
             chunks = []
             current_position = 0
             
-            # Function to find a good split point
-            def find_split_point(text, start_pos, chunk_size=6000):
+            # Track open tags for each chunk to ensure proper HTML structure
+            open_tags_stack = []
+            
+            # Function to find a good split point while ensuring HTML tag integrity
+            def find_split_point(text, start_pos, chunk_size=4000):
                 end_pos = min(start_pos + chunk_size, len(text))
                 if end_pos >= len(text):
-                    return len(text)
+                    return len(text), []
                 
                 # Look for end of section/div tags as good split points
-                for marker in ['</section>', '</div>']:
+                for marker in ['</section>', '</div>', '</p>']:
                     # Find the last occurrence of the marker before our target position
                     marker_pos = text.rfind(marker, start_pos, end_pos)
                     if marker_pos != -1:
-                        return marker_pos + len(marker)
+                        # Extract the tag name without the </> brackets
+                        tag_name = marker[2:-1]
+                        return marker_pos + len(marker), []
                 
-                # If no good split point found, look for end of paragraph
-                paragraph_end = text.rfind('</p>', start_pos, end_pos)
-                if paragraph_end != -1:
-                    return paragraph_end + 4
-                
-                # Fallback to sentence end
+                # If no clean section/div/p end found, need to track open tags
+                # Find a sentence boundary and track any unclosed tags
+                best_pos = end_pos
                 for punct in ['. ', '! ', '? ']:
                     punct_pos = text.rfind(punct, start_pos, end_pos)
                     if punct_pos != -1:
-                        return punct_pos + 2
+                        best_pos = punct_pos + 2
+                        break
                 
-                # Last resort: just split at chunk_size
-                return end_pos
+                # Now identify any tags that are opened in this chunk but not closed
+                chunk_text = text[start_pos:best_pos]
+                
+                # Simple regex to find all tags
+                open_tags = re.findall(r'<([a-zA-Z][a-zA-Z0-9]*)[^>]*?(?<!/)>', chunk_text)
+                close_tags = re.findall(r'</([a-zA-Z][a-zA-Z0-9]*)>', chunk_text)
+                
+                # Build stack of tags that remain open
+                tag_stack = []
+                for tag in open_tags:
+                    if tag not in ['br', 'img', 'input', 'hr', 'meta', 'link']:  # Skip self-closing tags
+                        tag_stack.append(tag)
+                
+                for tag in close_tags:
+                    if tag_stack and tag_stack[-1] == tag:
+                        tag_stack.pop()
+                    # If we have a closing tag without an opening one, we'll just ignore it
+                
+                return best_pos, tag_stack
             
-            # Split content into chunks
+            # Split content into chunks while tracking open tags
             while current_position < len(page_content):
-                split_point = find_split_point(page_content, current_position)
+                split_point, new_open_tags = find_split_point(page_content, current_position)
+                
                 chunk = page_content[current_position:split_point]
+                
+                # Add closing tags for any open tags from previous chunks
+                if open_tags_stack:
+                    log_with_time(f"Adding {len(open_tags_stack)} closing tags from previous chunk")
+                    close_tags_prefix = ""
+                    for tag in reversed(open_tags_stack):
+                        close_tags_prefix += f"</{tag}>"
+                    
+                    # Add reopening tags at the end for the next chunk
+                    reopen_tags_suffix = ""
+                    for tag in open_tags_stack:
+                        reopen_tags_suffix += f"<{tag}>"
+                    
+                    chunk = close_tags_prefix + chunk + reopen_tags_suffix
+                
                 chunks.append(chunk)
                 current_position = split_point
+                
+                # Update the open tags stack for the next chunk
+                open_tags_stack = new_open_tags
             
             log_with_time(f"Split content into {len(chunks)} chunks")
             
@@ -141,6 +202,108 @@ jobs:
             log_with_time("Combining all translated chunks")
             translated_content = "".join(translated_chunks)
             
+            # Check for and fix any HTML issues
+            log_with_time("Validating HTML structure in the translated content")
+            
+            # Function to check and repair HTML
+            def validate_and_repair_html(html_content):
+                # First, check for any obvious issues with tag counts
+                open_tags = {
+                    'div': html_content.count('<div'),
+                    'section': html_content.count('<section'),
+                    'p': html_content.count('<p'),
+                    'span': html_content.count('<span'),
+                    'ul': html_content.count('<ul'),
+                    'li': html_content.count('<li'),
+                    'table': html_content.count('<table'),
+                    'tr': html_content.count('<tr'),
+                    'td': html_content.count('<td'),
+                }
+                
+                close_tags = {
+                    'div': html_content.count('</div>'),
+                    'section': html_content.count('</section>'),
+                    'p': html_content.count('</p>'),
+                    'span': html_content.count('</span>'),
+                    'ul': html_content.count('</ul>'),
+                    'li': html_content.count('</li>'),
+                    'table': html_content.count('</table>'),
+                    'tr': html_content.count('</tr>'),
+                    'td': html_content.count('</td>'),
+                }
+                
+                log_with_time("HTML tag counts:")
+                for tag in open_tags:
+                    log_with_time(f"  {tag}: {open_tags[tag]} opening, {close_tags[tag]} closing")
+                    
+                # Use the HTMLParser to find unclosed tags
+                parser = HTMLTagTracker()
+                try:
+                    # Wrap in a basic HTML structure to avoid parser errors
+                    parser.feed(f"<root>{html_content}</root>")
+                    unclosed_tags = parser.get_unclosed_tags()
+                    
+                    if unclosed_tags:
+                        log_with_time(f"Unclosed tags found: {', '.join(unclosed_tags)}")
+                        # Add closing tags
+                        for tag in unclosed_tags:
+                            if tag != 'root':  # Skip our wrapper tag
+                                html_content += f"</{tag}>"
+                                log_with_time(f"Added closing tag: </{tag}>")
+                    else:
+                        log_with_time("No unclosed tags found by parser")
+                        
+                except Exception as e:
+                    log_with_time(f"Parser error: {str(e)}")
+                    # If parser fails, fall back to simple tag counting repair
+                    for tag, count in open_tags.items():
+                        diff = count - close_tags[tag]
+                        if diff > 0:
+                            # More opening than closing tags
+                            for _ in range(diff):
+                                html_content += f"</{tag}>"
+                                log_with_time(f"Added missing closing tag: </{tag}>")
+                
+                # Look for section-div pairs that must be properly nested
+                if not html_content.strip().endswith("</div> </section>") and (open_tags['section'] > 0 and open_tags['div'] > 0):
+                    # Make sure content ends with proper nested closing tags
+                    if not html_content.strip().endswith("</section>"):
+                        if html_content.strip().endswith("</div>"):
+                            html_content += " </section>"
+                        else:
+                            html_content += "</div> </section>"
+                    elif not html_content.strip().endswith("</div> </section>"):
+                        if not html_content.strip().endswith("</div>"):
+                            # Insert div closing before section closing
+                            html_content = html_content.rstrip()
+                            if html_content.endswith("</section>"):
+                                html_content = html_content[:-10] + "</div> </section>"
+                
+                return html_content
+            
+            # Validate and repair the translated content
+            original_length = len(translated_content)
+            translated_content = validate_and_repair_html(translated_content)
+            
+            if len(translated_content) != original_length:
+                log_with_time(f"HTML repaired: added {len(translated_content) - original_length} characters")
+            
+            # Save both versions for comparison if changes were made
+            if len(translated_content) != original_length:
+                try:
+                    os.makedirs('locales/debug', exist_ok=True)
+                    with open('locales/debug/before_repair.html', 'w', encoding='utf-8') as f:
+                        f.write("".join(translated_chunks))
+                    with open('locales/debug/after_repair.html', 'w', encoding='utf-8') as f:
+                        f.write(translated_content)
+                    log_with_time("Saved debug files for HTML repair comparison")
+                except Exception as e:
+                    log_with_time(f"Error saving debug files: {str(e)}")
+                    
+            # Final check to ensure the content ends properly
+            if not translated_content.strip().endswith("</div> </section>"):
+                log_with_time(f"WARNING: Content still doesn't end with '</div> </section>', it ends with: {translated_content[-30:].strip()}")
+            
         else:
             # For smaller content, translate the whole thing at once
             log_with_time("Content is small enough to translate in one go")
@@ -169,10 +332,80 @@ jobs:
 
         # Create the fr.json file
         log_with_time("Creating fr.json file")
+        
+        # Compare structure of original and translated content
+        log_with_time("Verifying HTML structure match between original and translated content")
+        
+        def extract_html_structure(html):
+            # Extract just the tags to compare structure
+            tags = re.findall(r'</?[a-zA-Z][a-zA-Z0-9]*[^>]*?>', html)
+            # Normalize self-closing tags
+            normalized = []
+            for tag in tags:
+                # Convert self-closing tags to standard format
+                if tag.endswith('/>'):
+                    tag = tag.replace('/>', '>')
+                normalized.append(tag)
+            return normalized
+        
+        original_structure = extract_html_structure(page_content)
+        translated_structure = extract_html_structure(translated_content)
+        
+        log_with_time(f"Original content has {len(original_structure)} HTML tags")
+        log_with_time(f"Translated content has {len(translated_structure)} HTML tags")
+        
+        # Check for significant structure difference
+        if abs(len(original_structure) - len(translated_structure)) > 5:
+            log_with_time("WARNING: Significant difference in HTML tag count between original and translation")
+            
+            # Try to identify where the difference starts
+            min_len = min(len(original_structure), len(translated_structure))
+            for i in range(min_len):
+                if original_structure[i] != translated_structure[i]:
+                    log_with_time(f"First difference at tag {i}: Original: {original_structure[i]}, Translated: {translated_structure[i]}")
+                    break
+            
+            # Save structures for comparison
+            try:
+                os.makedirs('locales/debug', exist_ok=True)
+                with open('locales/debug/original_structure.txt', 'w', encoding='utf-8') as f:
+                    f.write("\n".join(original_structure))
+                with open('locales/debug/translated_structure.txt', 'w', encoding='utf-8') as f:
+                    f.write("\n".join(translated_structure))
+                log_with_time("Saved HTML structures for comparison")
+            except Exception as e:
+                log_with_time(f"Error saving structure files: {str(e)}")
+            
+            # If translation has fewer closing tags, attempt repair
+            if translated_content.count("</") < page_content.count("</"):
+                log_with_time("Attempting final repair by analyzing missing closing tags")
+                # Use our HTML validator once more
+                translated_content = validate_and_repair_html(translated_content)
+        
+        # Ensure content ends properly with </div> </section>
+        if not translated_content.endswith("</div> </section>") and page_content.endswith("</div> </section>"):
+            log_with_time("Ensuring content ends with </div> </section>")
+            # Find the last occurrence of these tags in the correct order
+            if "</div> </section>" in page_content[-100:]:
+                if not translated_content.endswith("</section>"):
+                    if translated_content.endswith("</div>"):
+                        translated_content += " </section>"
+                    else:
+                        translated_content += "</div> </section>"
+                elif not translated_content.endswith("</div> </section>"):
+                    if not translated_content.endswith("</div>"):
+                        translated_content = translated_content.rstrip()
+                        if translated_content.endswith("</section>"):
+                            translated_content = translated_content[:-10] + "</div> </section>"
+        
         fr_data = {"common": {"nav": {"players": "Joueurs","pro": "Pro","teams": "Équipes"}},"meta": {"title": "DataMB | Guide","description": "Explication des outils, des statistiques et de la méthodologie utilisés par DataMB"},"search": {"placeholder": "Cherchez une équipe ou joueur..."},"page-content": translated_content}
         os.makedirs('locales', exist_ok=True)
         with open('locales/fr.json', 'w', encoding='utf-8') as json_file:
             json.dump(fr_data, json_file, ensure_ascii=False, indent=2)
+        
+        # Also save the raw HTML content for inspection
+        with open('locales/fr_content.html', 'w', encoding='utf-8') as f:
+            f.write(translated_content)
 
         total_time = time.time() - start_time
         log_with_time(f"Translated content saved to locales/fr.json. Total execution time: {total_time:.2f} seconds")
