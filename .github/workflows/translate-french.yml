@@ -63,62 +63,109 @@ jobs:
         log_with_time("Initializing OpenAI API client")
         client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))  # Use the new client
 
-        # Translate the content to French
-        log_with_time("Sending translation request to OpenAI API")
-        translation_start = time.time()
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",  # Use "gpt-4" or "gpt-3.5-turbo"
-            messages=[
-                {"role": "system", "content": "Translate the given JSON HTML content into French while keeping all JSON HTML tags and structure intact. Use widely accepted French football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translations of the following and that only, no extra text or markdown"},
-                {"role": "user", "content": page_content}
-            ],
-            temperature=0.7,
-        )
-        translation_end = time.time()
-        log_with_time(f"Received response from OpenAI API after {(translation_end - translation_start):.2f} seconds")
-
-        # Extract the translated content
-        log_with_time("Extracting translated content from response")
-        translated_content = response.choices[0].message.content
-
+        # Check for large content and process in batches if needed
+        log_with_time(f"Content length: {len(page_content)} characters")
         
-        if translated_content.startswith("```json\n") and translated_content.endswith("\n```"):
-            log_with_time("Removing code block markers from response")
-            translated_content = translated_content[7:-3].strip()  # Remove ```json\n and \n```
-
-        # Check if the translation is complete (ends with "</div> </section>")
-        log_with_time("Checking if translation is complete")
-        retry_count = 0
-        
-        while not (translated_content.strip().endswith("</div> </section>") or translated_content.strip().endswith("</div> </section>\"")):
-            retry_count += 1
-            log_with_time(f"Attempt {retry_count}: Translation appears incomplete. Retrying...")
-            # Show how the incomplete translation ends
-            last_chars = translated_content.strip()[-50:] if len(translated_content.strip()) > 50 else translated_content.strip()
-            log_with_time(f"Incomplete translation ends with: '{last_chars}'")
+        # Process in chunks if the content is large (over 6000 characters)
+        if len(page_content) > 6000:
+            log_with_time("Content is large, processing in batches")
             
-            # Retry the translation
-            retry_start = time.time()
-            log_with_time("Sending retry request to OpenAI API")
+            # Split content into manageable chunks based on HTML structure
+            # Look for major section divisions like </div> or </section> to find good split points
+            chunks = []
+            current_position = 0
+            
+            # Function to find a good split point
+            def find_split_point(text, start_pos, chunk_size=6000):
+                end_pos = min(start_pos + chunk_size, len(text))
+                if end_pos >= len(text):
+                    return len(text)
+                
+                # Look for end of section/div tags as good split points
+                for marker in ['</section>', '</div>']:
+                    # Find the last occurrence of the marker before our target position
+                    marker_pos = text.rfind(marker, start_pos, end_pos)
+                    if marker_pos != -1:
+                        return marker_pos + len(marker)
+                
+                # If no good split point found, look for end of paragraph
+                paragraph_end = text.rfind('</p>', start_pos, end_pos)
+                if paragraph_end != -1:
+                    return paragraph_end + 4
+                
+                # Fallback to sentence end
+                for punct in ['. ', '! ', '? ']:
+                    punct_pos = text.rfind(punct, start_pos, end_pos)
+                    if punct_pos != -1:
+                        return punct_pos + 2
+                
+                # Last resort: just split at chunk_size
+                return end_pos
+            
+            # Split content into chunks
+            while current_position < len(page_content):
+                split_point = find_split_point(page_content, current_position)
+                chunk = page_content[current_position:split_point]
+                chunks.append(chunk)
+                current_position = split_point
+            
+            log_with_time(f"Split content into {len(chunks)} chunks")
+            
+            # Translate each chunk separately
+            translated_chunks = []
+            for i, chunk in enumerate(chunks):
+                log_with_time(f"Translating chunk {i+1}/{len(chunks)} ({len(chunk)} characters)")
+                
+                # Translate current chunk
+                chunk_translation_start = time.time()
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",  # Use "gpt-4" or "gpt-3.5-turbo"
+                    messages=[
+                        {"role": "system", "content": "Translate the given JSON HTML content into French while keeping all JSON HTML tags and structure intact. Use widely accepted French football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translations of the following and that only, no extra text or markdown"},
+                        {"role": "user", "content": chunk}
+                    ],
+                    temperature=0.7,
+                )
+                chunk_translation_end = time.time()
+                
+                log_with_time(f"Chunk {i+1} translated in {(chunk_translation_end - chunk_translation_start):.2f} seconds")
+                
+                # Get translated chunk
+                translated_chunk = response.choices[0].message.content
+                if translated_chunk.startswith("```json\n") and translated_chunk.endswith("\n```"):
+                    translated_chunk = translated_chunk[7:-3].strip()
+                
+                translated_chunks.append(translated_chunk)
+            
+            # Combine all translated chunks
+            log_with_time("Combining all translated chunks")
+            translated_content = "".join(translated_chunks)
+            
+        else:
+            # For smaller content, translate the whole thing at once
+            log_with_time("Content is small enough to translate in one go")
+            
+            # Translate the content to French
+            log_with_time("Sending translation request to OpenAI API")
+            translation_start = time.time()
             response = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-4o-mini",  # Use "gpt-4" or "gpt-3.5-turbo"
                 messages=[
-                    {"role": "system", "content": "Translate the given JSON HTML content into French while keeping all JSON HTML tags and structure intact. Use widely accepted French football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translations of the following and that only, no extra text or markdown. IMPORTANT: Ensure you translate the COMPLETE content and end with '</div> </section>'"},
-                    {"role": "user", "content": page_content},
-                    {"role": "assistant", "content": translated_content},
-                    {"role": "user", "content": "Your response is incomplete. Please continue from where you left off until you reach the end with '</div> </section>'. Don't start over, rewrite what you already translated and then just continue the translation from where you stopped."}
+                    {"role": "system", "content": "Translate the given JSON HTML content into French while keeping all JSON HTML tags and structure intact. Use widely accepted French football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translations of the following and that only, no extra text or markdown"},
+                    {"role": "user", "content": page_content}
                 ],
                 temperature=0.7,
             )
-            retry_end = time.time()
-            log_with_time(f"Received retry response from OpenAI API after {(retry_end - retry_start):.2f} seconds")
-            
+            translation_end = time.time()
+            log_with_time(f"Received response from OpenAI API after {(translation_end - translation_start):.2f} seconds")
+
+            # Extract the translated content
+            log_with_time("Extracting translated content from response")
             translated_content = response.choices[0].message.content
             
             if translated_content.startswith("```json\n") and translated_content.endswith("\n```"):
-                translated_content = translated_content[7:-3].strip()
-            
-        log_with_time(f"Translation is complete after {retry_count} retries!")
+                log_with_time("Removing code block markers from response")
+                translated_content = translated_content[7:-3].strip()  # Remove ```json\n and \n```
 
         # Create the fr.json file
         log_with_time("Creating fr.json file")
