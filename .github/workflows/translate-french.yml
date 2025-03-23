@@ -36,27 +36,38 @@ jobs:
         cat > translate_to_french.py << 'EOL'
         import json
         import os
+        import time
+        import sys
         from openai import OpenAI  # Import the new OpenAI client
         import re
 
+        # Function to log with timestamps
+        def log_with_time(message):
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            print(f"[{timestamp}] {message}")
+            sys.stdout.flush()  # Force output to be written immediately
+
+        start_time = time.time()
+        log_with_time("Starting translation process")
+
         # Load the xx.json file
+        log_with_time("Loading xx.json file")
         with open('locales/xx.json', 'r', encoding='utf-8') as file:
             en_data = json.load(file)
 
         # Extract the page-content
+        log_with_time("Extracting page-content")
         page_content = en_data.get('page-content', '')
         if not page_content:
             raise Exception("No 'page-content' found in xx.json")
-            
-        # Remove whitespace from the JSON content
-        page_content = re.sub(r'\s+', ' ', page_content)
-        page_content = page_content.strip()
-        print("Removed whitespace from JSON content for more efficient translation")
 
         # Initialize OpenAI API
+        log_with_time("Initializing OpenAI API client")
         client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))  # Use the new client
 
         # Translate the content to French
+        log_with_time("Sending translation request to OpenAI API")
+        translation_start = time.time()
         response = client.chat.completions.create(
             model="gpt-4o-mini",  # Use "gpt-4" or "gpt-3.5-turbo"
             messages=[
@@ -65,22 +76,29 @@ jobs:
             ],
             temperature=0.7,
         )
+        translation_end = time.time()
+        log_with_time(f"Received response from OpenAI API after {(translation_end - translation_start):.2f} seconds")
 
         # Extract the translated content
+        log_with_time("Extracting translated content from response")
         translated_content = response.choices[0].message.content
 
         
         if translated_content.startswith("```json\n") and translated_content.endswith("\n```"):
+            log_with_time("Removing code block markers from response")
             translated_content = translated_content[7:-3].strip()  # Remove ```json\n and \n```
 
         # Check if the translation is complete (ends with "</div> </section>")
+        log_with_time("Checking if translation is complete")
         max_retries = 3
         current_try = 1
         
         while not (translated_content.strip().endswith("</div> </section>") or translated_content.strip().endswith("</div> </section>\"")) and current_try <= max_retries:
-            print(f"Attempt {current_try}: Translation appears incomplete. Retrying...")
+            log_with_time(f"Attempt {current_try}: Translation appears incomplete. Retrying...")
             
             # Retry the translation
+            retry_start = time.time()
+            log_with_time("Sending retry request to OpenAI API")
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
@@ -89,6 +107,8 @@ jobs:
                 ],
                 temperature=0.7,
             )
+            retry_end = time.time()
+            log_with_time(f"Received retry response from OpenAI API after {(retry_end - retry_start):.2f} seconds")
             
             translated_content = response.choices[0].message.content
             
@@ -98,15 +118,19 @@ jobs:
             current_try += 1
             
         if not (translated_content.strip().endswith("</div> </section>") or translated_content.strip().endswith("</div> </section>\"")):
-            print("Warning: Translation may still be incomplete after maximum retries.")
+            log_with_time("Warning: Translation may still be incomplete after maximum retries.")
+        else:
+            log_with_time("Translation is complete!")
 
         # Create the fr.json file
+        log_with_time("Creating fr.json file")
         fr_data = {"common": {"nav": {"players": "Joueurs","pro": "Pro","teams": "Équipes"}},"meta": {"title": "DataMB | Guide","description": "Explication des outils, des statistiques et de la méthodologie utilisés par DataMB"},"search": {"placeholder": "Cherchez une équipe ou joueur..."},"page-content": translated_content}
         os.makedirs('locales', exist_ok=True)
         with open('locales/fr.json', 'w', encoding='utf-8') as json_file:
             json.dump(fr_data, json_file, ensure_ascii=False, indent=2)
 
-        print("Translated content saved to locales/fr.json")
+        total_time = time.time() - start_time
+        log_with_time(f"Translated content saved to locales/fr.json. Total execution time: {total_time:.2f} seconds")
         EOL
 
         python translate_to_french.py
