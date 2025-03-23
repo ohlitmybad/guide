@@ -4,7 +4,7 @@ on:
   push:
     branches: [ main, master ]
     paths:
-      - 'locales/en.json'
+      - 'locales/xx.json'
 
 jobs:
   translate-to-french:
@@ -26,7 +26,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install openai
 
-    - name: Translate en.json to French
+    - name: Translate xx.json to French
       env:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}  # Add your OpenAI API key to GitHub Secrets
       run: |
@@ -35,25 +35,26 @@ jobs:
         import os
         from openai import OpenAI  # Import the new OpenAI client
 
-        # Load the en.json file
-        with open('locales/en.json', 'r', encoding='utf-8') as file:
+        # Load the xx.json file
+        with open('locales/xx.json', 'r', encoding='utf-8') as file:
             en_data = json.load(file)
 
         # Extract the page-content
         page_content = en_data.get('page-content', '')
         if not page_content:
-            raise Exception("No 'page-content' found in en.json")
+            raise Exception("No 'page-content' found in xx.json")
 
         # Initialize OpenAI API
         client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))  # Use the new client
 
         # Translate the content to French
         response = client.chat.completions.create(
-            model="o3-mini",  # Use "gpt-4" or "gpt-3.5-turbo"
+            model="gpt-4o-mini",  # Use "gpt-4" or "gpt-3.5-turbo"
             messages=[
                 {"role": "system", "content": "Translate the given JSON HTML content into French while keeping all JSON HTML tags and structure intact. Use widely accepted French football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translations of the following and that only, no extra text or markdown"},
                 {"role": "user", "content": page_content}
             ],
+            temperature=0.7,
         )
 
         # Extract the translated content
@@ -67,16 +68,17 @@ jobs:
         max_retries = 3
         current_try = 1
         
-        while not translated_content.strip().endswith("</div> </section>") and current_try <= max_retries:
+        while not (translated_content.strip().endswith("</div> </section>") or translated_content.strip().endswith("</div> </section>\"")) and current_try <= max_retries:
             print(f"Attempt {current_try}: Translation appears incomplete. Retrying...")
             
             # Retry the translation
             response = client.chat.completions.create(
-                model="gpt-o3-mini",
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": "Translate the given JSON HTML content into French while keeping all JSON HTML tags and structure intact. Use widely accepted French football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translations of the following and that only, no extra text or markdown. IMPORTANT: Ensure you translate the COMPLETE content and end with '</div> </section>'"},
                     {"role": "user", "content": page_content}
                 ],
+                temperature=0.7,
             )
             
             translated_content = response.choices[0].message.content
@@ -86,7 +88,7 @@ jobs:
                 
             current_try += 1
             
-        if not translated_content.strip().endswith("</div> </section>"):
+        if not (translated_content.strip().endswith("</div> </section>") or translated_content.strip().endswith("</div> </section>\"")):
             print("Warning: Translation may still be incomplete after maximum retries.")
 
         # Create the fr.json file
@@ -105,5 +107,27 @@ jobs:
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         git add locales/fr.json
-        git diff --quiet && git diff --staged --quiet || git commit -m "Auto-translate en.json to French"
+        git diff --quiet && git diff --staged --quiet || git commit -m "Auto-translate xx.json to French"
+        git push
+
+    - name: Clone and update proguide repository
+      run: |
+        # Create a temporary directory for the proguide repo
+        mkdir -p /tmp/proguide
+        cd /tmp/proguide
+        
+        # Clone the proguide repository
+        git clone https://x-access-token:${{ secrets.PAT }}@github.com/datamb/proguide.git .
+        
+        # Create directories if they don't exist
+        mkdir -p locales
+        
+        # Copy the fr.json file from the current workspace to proguide
+        cp $GITHUB_WORKSPACE/locales/fr.json locales/
+        
+        # Commit and push changes to proguide
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add locales/fr.json
+        git diff --quiet && git diff --staged --quiet || git commit -m "Auto-translate xx.json to French"
         git push
