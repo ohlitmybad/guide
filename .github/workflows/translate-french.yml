@@ -113,176 +113,225 @@ jobs:
             diff = list(differ.compare(prev_html.splitlines(), current_html.splitlines()))
 
             # Find changed lines
-            changed_line_indices = []
-            change_types = []  # Track whether each line was added ('+') or removed ('-')
-            
+            changed_lines = []
             for i, line in enumerate(diff):
                 if line.startswith('+ ') or line.startswith('- '):
-                    changed_line_indices.append(i)
-                    change_types.append('+' if line.startswith('+ ') else '-')
+                    changed_lines.append((i, line[0], line[2:]))  # Store (index, type, content)
             
-            if not changed_line_indices:
+            if not changed_lines:
                 log_with_time("No changes detected, will translate everything")
                 return [current_html]
+                
+            log_with_time(f"Found {len(changed_lines)} changed lines")
             
             # Group consecutive changed lines
             change_groups = []
-            change_type_groups = []
-            current_group = [changed_line_indices[0]]
-            current_type_group = [change_types[0]]
+            current_group = [changed_lines[0]]
             
-            for i in range(1, len(changed_line_indices)):
-                if changed_line_indices[i] - changed_line_indices[i-1] <= 2:  # Allow 1 line gap
-                    current_group.append(changed_line_indices[i])
-                    current_type_group.append(change_types[i])
+            for i in range(1, len(changed_lines)):
+                if changed_lines[i][0] - changed_lines[i-1][0] <= 2:  # Allow 1 line gap
+                    current_group.append(changed_lines[i])
                 else:
-                    change_groups.append((current_group, current_type_group))
-                    current_group = [changed_line_indices[i]]
-                    current_type_group = [change_types[i]]
+                    change_groups.append(current_group)
+                    current_group = [changed_lines[i]]
             
             if current_group:
-                change_groups.append((current_group, current_type_group))
+                change_groups.append(current_group)
+                
+            log_with_time(f"Grouped into {len(change_groups)} change groups")
             
-            # Extract changed blocks with their container elements
+            # Extract specific containers containing changes
             changed_blocks = []
-            # Also track the affected container in previous version if content was removed
-            removed_containers = []
             
-            for group_indices, group_types in change_groups:
-                # Get the line numbers in the original content
-                start_idx = max(0, group_indices[0] - 3)  # 3 lines before
-                end_idx = min(len(diff), group_indices[-1] + 4)  # 3 lines after
+            for group in change_groups:
+                # Get context around the changed lines
+                start_line = max(0, group[0][0] - 3)
+                end_line = min(len(diff), group[-1][0] + 4)
                 
-                # Extract the lines from current content for added lines
-                added_content_lines = []
-                for i in range(start_idx, end_idx):
-                    if diff[i].startswith('+ ') or diff[i].startswith('  '):
-                        added_content_lines.append(diff[i][2:])
+                # Get all added lines in this group
+                added_lines = [line for _, type_, line in group if type_ == '+']
+                # Get all removed lines in this group
+                removed_lines = [line for _, type_, line in group if type_ == '-']
                 
-                # Also extract the lines from previous content for removed lines
-                removed_content_lines = []
-                for i in range(start_idx, end_idx):
-                    if diff[i].startswith('- ') or diff[i].startswith('  '):
-                        removed_content_lines.append(diff[i][2:])
+                # Get context lines
+                context_lines = []
+                for i in range(start_line, end_line):
+                    if i < len(diff) and diff[i].startswith('  '):
+                        context_lines.append(diff[i][2:])
                 
-                # Find the container HTML element for both added and removed content
-                added_block_content = '\n'.join(added_content_lines)
-                removed_block_content = '\n'.join(removed_content_lines)
+                # Create a context block with both added lines and context
+                added_context = context_lines + added_lines
+                added_context_str = '\n'.join(added_context)
                 
-                # Check if there are any removals in this group
-                has_removals = '-' in group_types
-                has_additions = '+' in group_types
+                # Create a context block with both removed lines and context
+                removed_context = context_lines + removed_lines
+                removed_context_str = '\n'.join(removed_context)
                 
-                # When content is removed, we need to find it in the previous HTML
-                if has_removals:
-                    log_with_time("Found removed content, identifying container in previous version")
-                    removed_container = find_containing_element(prev_html, removed_block_content)
-                    if removed_container:
-                        log_with_time(f"Found container in previous version for removed content: {removed_container[:50]}...")
-                        # Try to find the corresponding container in the current HTML
-                        # to see what replaced it (if anything)
-                        removed_containers.append(removed_container)
+                # Determine container element
+                if added_lines:
+                    log_with_time("Finding container for added/modified content")
+                    container = find_minimal_container(current_html, added_lines)
+                    if container:
+                        log_with_time(f"Found container for added content: {container[:50]}...")
+                        changed_blocks.append(container)
                 
-                # For additions, find container in current HTML
-                if has_additions:
-                    added_container = find_containing_element(current_html, added_block_content)
-                    if added_container:
-                        changed_blocks.append(added_container)
-                    else:
-                        changed_blocks.append(added_block_content)
+                if removed_lines:
+                    log_with_time("Finding container for removed/replaced content")
+                    # Find what replaced the removed content in the current HTML
+                    replacement = find_replacement_container(prev_html, current_html, removed_lines)
+                    if replacement and replacement not in changed_blocks:
+                        log_with_time(f"Found replacement container: {replacement[:50]}...")
+                        changed_blocks.append(replacement)
             
-            # Now, identify containers in current HTML that replace removed containers
-            for removed_container in removed_containers:
-                # Extract the HTML tag type of the removed container
-                removed_tag_match = re.match(r'<([a-z][a-z0-9]*)[^>]*>', removed_container)
-                if removed_tag_match:
-                    tag_name = removed_tag_match.group(1)
-                    # Look for containers of the same type in the current HTML
-                    # that might have replaced this one
-                    pattern = f'<{tag_name}[^>]*>.*?</{tag_name}>'
-                    potential_replacements = list(re.finditer(pattern, current_html, re.DOTALL))
-                    
-                    # See if any of these containers occupy roughly the same position
-                    for potential in potential_replacements:
-                        replacement_container = potential.group(0)
-                        # If this container isn't already in our list, add it
-                        if replacement_container not in changed_blocks:
-                            log_with_time(f"Adding potential replacement container: {replacement_container[:50]}...")
-                            changed_blocks.append(replacement_container)
-            
-            log_with_time(f"Found {len(changed_blocks)} changed blocks with their containers (including replacements for removed content)")
-            
-            # Remove duplicates while preserving order
+            # Remove duplicates
             unique_blocks = []
             seen = set()
             for block in changed_blocks:
                 if block not in seen:
                     seen.add(block)
                     unique_blocks.append(block)
-                    
+            
+            if not unique_blocks:
+                log_with_time("Couldn't identify specific containers, will translate everything")
+                return [current_html]
+                
+            log_with_time(f"Identified {len(unique_blocks)} unique container blocks to translate")
             return unique_blocks
         
-        # Function to find the innermost HTML container element that contains the changed content
-        def find_containing_element(full_html, changed_content):
-            # If the changed content is very small, expand it to make matching more reliable
-            if len(changed_content) < 20:
-                # Find position in full HTML
-                pos = full_html.find(changed_content)
-                if pos == -1:
-                    # Try a fuzzy approach if exact match fails
-                    for i in range(0, len(changed_content)):
-                        partial = changed_content[i:]
-                        if partial in full_html:
-                            pos = full_html.find(partial) - i
-                            break
-                
-                if pos != -1:
-                    # Get more context around the change
-                    start = max(0, pos - 200)
-                    end = min(len(full_html), pos + len(changed_content) + 200)
-                    expanded_content = full_html[start:end]
-                    changed_content = expanded_content
-            
-            # Define container tags to look for
+        # Find the smallest HTML container that contains the changed content
+        def find_minimal_container(html, changed_lines):
             container_tags = ['li', 'ul', 'ol', 'div', 'p', 'span', 'section', 'article', 'td', 'th']
             
-            # First find if the changed content contains any of these tags fully
-            for tag in container_tags:
-                # Look for a complete tag element in the changed content
-                pattern = f'<{tag}[^>]*>.*?</{tag}>'
-                matches = re.finditer(pattern, changed_content, re.DOTALL)
-                for match in matches:
-                    # If the match covers most of the content, this is a good container
-                    if (match.end() - match.start()) > len(changed_content) * 0.7:
-                        return match.group(0)
-            
-            # If no good container in the changed content, find the smallest container in the full HTML
-            pos = full_html.find(changed_content)
-            if pos != -1:
-                # Look backward for opening tags
-                opening_tags = []
-                for i in range(pos, 0, -1):
-                    if full_html[i] == '<' and not full_html[i:i+2] == '</':
-                        tag_end = full_html.find('>', i)
-                        if tag_end != -1:
-                            tag_name_match = re.match(r'<([a-z][a-z0-9]*)', full_html[i:tag_end])
-                            if tag_name_match and tag_name_match.group(1) in container_tags:
-                                opening_tags.append((i, tag_name_match.group(1)))
-                
-                # Look for the matching closing tag for each opening tag
-                for opening_pos, tag_name in opening_tags:
-                    # Find the matching closing tag after the changed content
-                    closing_tag = f'</{tag_name}>'
-                    closing_pos = full_html.find(closing_tag, pos + len(changed_content))
+            # Try to find the exact line in the HTML
+            for line in changed_lines:
+                line = line.strip()
+                if not line:
+                    continue
                     
-                    if closing_pos != -1:
-                        # Check if this container is not too large (to keep it specific to the changed part)
-                        container_size = closing_pos + len(closing_tag) - opening_pos
-                        if container_size < 2000:  # Reasonable size limit for a container
-                            return full_html[opening_pos:closing_pos + len(closing_tag)]
+                # Find position of this line in the HTML
+                pos = html.find(line)
+                if pos == -1:
+                    continue
+                
+                # Look backward for the nearest opening tag
+                for tag in container_tags:
+                    # Find the nearest opening tag before this position
+                    open_tag = f'<{tag}'
+                    open_pos = html.rfind(open_tag, 0, pos)
+                    if open_pos == -1:
+                        continue
+                    
+                    # Make sure we found a complete tag
+                    tag_end = html.find('>', open_pos)
+                    if tag_end == -1 or tag_end > pos:
+                        continue
+                    
+                    # Find the matching closing tag
+                    close_tag = f'</{tag}>'
+                    close_pos = html.find(close_tag, pos)
+                    if close_pos == -1:
+                        continue
+                    
+                    # Make sure the container isn't too large
+                    container_size = close_pos + len(close_tag) - open_pos
+                    if container_size < 3000:  # Reasonable size limit
+                        return html[open_pos:close_pos + len(close_tag)]
             
-            # Fallback: just return the changed content if no good container found
-            return changed_content
+            # If we can't find a good container for any line, try with the concatenated content
+            concatenated = ' '.join([line.strip() for line in changed_lines if line.strip()])
+            if len(concatenated) > 10:  # Only try if we have enough text
+                for i in range(0, min(30, len(concatenated))):
+                    substring = concatenated[i:]
+                    pos = html.find(substring)
+                    if pos != -1:
+                        # Found a match, look for container tags
+                        for tag in container_tags:
+                            open_tag = f'<{tag}'
+                            open_pos = html.rfind(open_tag, 0, pos)
+                            if open_pos == -1:
+                                continue
+                            
+                            tag_end = html.find('>', open_pos)
+                            if tag_end == -1 or tag_end > pos:
+                                continue
+                            
+                            close_tag = f'</{tag}>'
+                            close_pos = html.find(close_tag, pos)
+                            if close_pos == -1:
+                                continue
+                            
+                            container_size = close_pos + len(close_tag) - open_pos
+                            if container_size < 3000:
+                                return html[open_pos:close_pos + len(close_tag)]
+            
+            return None
+            
+        # Find the container in current HTML that replaced a removed container
+        def find_replacement_container(prev_html, current_html, removed_lines):
+            # If removed lines contain HTML tags, extract them for better matching
+            tags = []
+            for line in removed_lines:
+                tag_matches = re.findall(r'<([a-z][a-z0-9]*)[^>]*>', line)
+                tags.extend(tag_matches)
+            
+            if not tags:
+                return None
+                
+            # Count tags to find the most common ones
+            tag_counts = {}
+            for tag in tags:
+                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+                
+            # Sort by frequency
+            sorted_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)
+            
+            # Look for similar container in current HTML based on tag structure
+            for tag, _ in sorted_tags[:3]:  # Try top 3 most common tags
+                # Find where this tag was in the previous HTML around the removed lines
+                concatenated = ' '.join([line.strip() for line in removed_lines if line.strip()])
+                if len(concatenated) < 10:
+                    continue
+                    
+                # Find position in previous HTML
+                prev_pos = prev_html.find(concatenated[:min(30, len(concatenated))])
+                if prev_pos == -1:
+                    continue
+                
+                # Find the containing element in previous HTML
+                open_tag = f'<{tag}'
+                prev_open_pos = prev_html.rfind(open_tag, 0, prev_pos)
+                if prev_open_pos == -1:
+                    continue
+                    
+                prev_tag_end = prev_html.find('>', prev_open_pos)
+                if prev_tag_end == -1 or prev_tag_end > prev_pos:
+                    continue
+                    
+                prev_close_tag = f'</{tag}>'
+                prev_close_pos = prev_html.find(prev_close_tag, prev_pos)
+                if prev_close_pos == -1:
+                    continue
+                
+                # Get some context before and after the container
+                context_before = prev_html[max(0, prev_open_pos - 100):prev_open_pos]
+                context_after = prev_html[prev_close_pos + len(prev_close_tag):min(len(prev_html), prev_close_pos + len(prev_close_tag) + 100)]
+                
+                # Look for similar context in current HTML
+                curr_before_pos = current_html.find(context_before[-30:]) if len(context_before) >= 30 else -1
+                curr_after_pos = current_html.find(context_after[:30]) if len(context_after) >= 30 else -1
+                
+                if curr_before_pos != -1 and curr_after_pos != -1:
+                    # Found context on both sides, extract the container in between
+                    container = current_html[curr_before_pos + len(context_before[-30:]):curr_after_pos]
+                    # Verify it's a valid container
+                    if f'<{tag}' in container and f'</{tag}>' in container:
+                        # Extract just the outermost container
+                        start = container.find(f'<{tag}')
+                        end = container.rfind(f'</{tag}>') + len(f'</{tag}>')
+                        if start != -1 and end != -1 and start < end:
+                            return container[start:end]
+            
+            return None
 
         # Find the blocks that need to be translated
         blocks_to_translate = find_changed_blocks(prev_page_content, current_page_content)
