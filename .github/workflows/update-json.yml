@@ -40,7 +40,7 @@ jobs:
         import json
         from bs4 import BeautifulSoup
         import os
-        import shutil
+        import re
 
         # Process guide repo first
         print("Processing guide repo...")
@@ -58,7 +58,10 @@ jobs:
         if not guide_div_content:
             raise Exception("Could not find div with data-i18n='page-content' in guide repo")
         
-        # Create JSON object for guide
+        # Extract just the inner content of the div (without the div tag itself)
+        guide_inner_content = ''.join(str(child) for child in guide_div_content.children)
+        
+        # Create JSON object for guide - using the full div including tag
         guide_json_obj = {"page-content": str(guide_div_content)}
         
         # Write to guide en.json
@@ -75,27 +78,25 @@ jobs:
         with open('proguide/index.html', 'r', encoding='utf-8') as file:
             proguide_html_content = file.read()
         
-        # Parse the HTML
-        proguide_soup = BeautifulSoup(proguide_html_content, 'html.parser')
+        # We'll use a regex approach to only replace the inner content
+        # This is safer than modifying the DOM structure
+        pattern = r'(<div[^>]*data-i18n="page-content"[^>]*>).*?(</div>)'
+        replacement = r'\1' + guide_inner_content + r'\2'
         
-        # Find the div with data-i18n="page-content" in proguide
-        proguide_div_content = proguide_soup.find('div', attrs={'data-i18n': 'page-content'})
-        
-        if not proguide_div_content:
-            raise Exception("Could not find div with data-i18n='page-content' in proguide repo")
-        
-        # Replace the content with guide content
-        proguide_div_content.clear()
-        proguide_div_content.append(BeautifulSoup(str(guide_div_content.contents), 'html.parser'))
+        # Replace only the inner content of the div
+        updated_proguide_html = re.sub(pattern, replacement, proguide_html_content, flags=re.DOTALL)
         
         # Write updated HTML back to proguide index.html
         with open('proguide/index.html', 'w', encoding='utf-8') as file:
-            file.write(str(proguide_soup))
+            file.write(updated_proguide_html)
         
         print("Updated proguide/index.html successfully!")
         
         # Create JSON object for proguide (same as guide)
-        proguide_json_obj = {"page-content": str(guide_div_content)}
+        # We need to parse the updated HTML to get the correct div
+        updated_soup = BeautifulSoup(updated_proguide_html, 'html.parser')
+        updated_div = updated_soup.find('div', attrs={'data-i18n': 'page-content'})
+        proguide_json_obj = {"page-content": str(updated_div)}
         
         # Write to proguide en.json
         os.makedirs('proguide/locales', exist_ok=True)
