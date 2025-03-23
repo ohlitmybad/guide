@@ -37,6 +37,7 @@ jobs:
         import json
         import os
         from openai import OpenAI  # Import the new OpenAI client
+        import re
 
         # Load the xx.json file
         with open('locales/xx.json', 'r', encoding='utf-8') as file:
@@ -46,6 +47,11 @@ jobs:
         page_content = en_data.get('page-content', '')
         if not page_content:
             raise Exception("No 'page-content' found in xx.json")
+            
+        # Remove whitespace from the JSON content
+        page_content = re.sub(r'\s+', ' ', page_content)
+        page_content = page_content.strip()
+        print("Removed whitespace from JSON content for more efficient translation")
 
         # Initialize OpenAI API
         client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))  # Use the new client
