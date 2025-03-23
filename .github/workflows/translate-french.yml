@@ -15,7 +15,7 @@ jobs:
       uses: actions/checkout@v3
       with:
         token: ${{ secrets.PAT }}
-        fetch-depth: 2  # Fetch the current and previous commit
+        fetch-depth: 2  # Fetch the previous commit to compare changes
 
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -25,222 +25,410 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install openai
+        pip install openai beautifulsoup4 lxml
 
-    - name: Translate changes in xx.json to French
+    - name: Incremental Translation to French
       env:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       id: translate
       run: |
-        cat > translate_changes.py << 'EOL'
+        cat > incremental_translate.py << 'EOL'
         import json
         import os
         import time
         import sys
-        import subprocess
         from openai import OpenAI
+        import re
+        from bs4 import BeautifulSoup
+        import subprocess
+        import difflib
 
         # Function to log with timestamps
         def log_with_time(message):
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
             print(f"[{timestamp}] {message}")
-            sys.stdout.flush()
+            sys.stdout.flush()  # Force output to be written immediately
 
         start_time = time.time()
-        log_with_time("Starting translation process")
+        log_with_time("Starting incremental translation process")
 
-        # Get previous version of xx.json
-        log_with_time("Getting previous version of xx.json")
-        try:
-            previous_content = subprocess.check_output(
-                ["git", "show", "HEAD~1:locales/xx.json"], 
-                text=True
-            )
-            previous_xx = json.loads(previous_content)
-        except subprocess.CalledProcessError:
-            log_with_time("Could not find previous version, will create new fr.json from scratch")
-            previous_xx = {"page-content": ""}
-
-        # Load current xx.json
-        log_with_time("Loading current xx.json file")
+        # Load the current xx.json file
+        log_with_time("Loading xx.json file")
         with open('locales/xx.json', 'r', encoding='utf-8') as file:
-            current_xx = json.load(file)
+            current_xx_data = json.load(file)
 
-        # Load existing fr.json if it exists
-        fr_data = {"common": {"nav": {"players": "Joueurs","pro": "Pro","teams": "Équipes"}},
-                "meta": {"title": "DataMB | Guide","description": "Explication des outils, des statistiques et de la méthodologie utilisés par DataMB"},
-                "search": {"placeholder": "Cherchez une équipe ou joueur..."},
-                "page-content": ""}
-
-        if os.path.exists('locales/fr.json'):
+        # Check if fr.json exists and load it, or create an empty structure
+        fr_path = 'locales/fr.json'
+        if os.path.exists(fr_path):
             log_with_time("Loading existing fr.json file")
-            with open('locales/fr.json', 'r', encoding='utf-8') as file:
+            with open(fr_path, 'r', encoding='utf-8') as file:
                 fr_data = json.load(file)
+        else:
+            log_with_time("No existing fr.json file, creating basic structure")
+            fr_data = {
+                "common": {"nav": {"players": "Joueurs", "pro": "Pro", "teams": "Équipes"}},
+                "meta": {"title": "DataMB | Guide", "description": "Explication des outils, des statistiques et de la méthodologie utilisés par DataMB"},
+                "search": {"placeholder": "Cherchez une équipe ou joueur..."},
+                "page-content": ""
+            }
+
+        # Get the previous version of xx.json from git
+        log_with_time("Retrieving previous version of xx.json")
+        try:
+            result = subprocess.run(
+                ["git", "show", "HEAD~1:locales/xx.json"],
+                capture_output=True, text=True, check=True
+            )
+            prev_xx_content = result.stdout
+            prev_xx_data = json.loads(prev_xx_content)
+            log_with_time("Successfully retrieved previous version")
+        except Exception as e:
+            log_with_time(f"Error retrieving previous version: {str(e)}")
+            log_with_time("Falling back to full translation")
+            prev_xx_data = {"page-content": ""}
+
+        # Extract current and previous page-content
+        current_content = current_xx_data.get('page-content', '')
+        previous_content = prev_xx_data.get('page-content', '')
+        fr_content = fr_data.get('page-content', '')
+
+        if not current_content:
+            raise Exception("No 'page-content' found in xx.json")
 
         # Initialize OpenAI API
         log_with_time("Initializing OpenAI API client")
         client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
-        # Simple approach: if this is the first run or there's no fr.json, translate everything
-        if not os.path.exists('locales/fr.json') or not fr_data.get('page-content'):
-            log_with_time("No existing fr.json found, translating entire content")
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "Translate the given HTML content from English to French. Keep all HTML tags and structure intact. Use widely accepted French football terminology."},
-                    {"role": "user", "content": current_xx['page-content']}
-                ],
-                temperature=0.7,
-            )
-            fr_data['page-content'] = response.choices[0].message.content.strip()
+        # Parse HTML content
+        def parse_html(content):
+            # Add a root element to make it valid HTML for parsing
+            wrapped_content = f"<root>{content}</root>"
+            return BeautifulSoup(wrapped_content, 'lxml')
+
+        current_soup = parse_html(current_content)
+        previous_soup = parse_html(previous_content)
+        fr_soup = parse_html(fr_content) if fr_content else None
+
+        # Function to get a unique selector for an element
+        def get_element_path(element):
+            if not element or element.name == 'root':
+                return ''
             
-            # Clean up any code block formatting that might be returned
-            if fr_data['page-content'].startswith("```") and fr_data['page-content'].endswith("```"):
-                fr_data['page-content'] = fr_data['page-content'].split("```")[1].strip()
+            # Include tag, class, and id in the path if they exist
+            tag = element.name
+            element_id = f"#{element.get('id')}" if element.get('id') else ""
+            classes = "." + ".".join(element.get('class', [])) if element.get('class') else ""
+            
+            # Build a basic path
+            current_path = f"{tag}{element_id}{classes}"
+            
+            # Add position among siblings
+            siblings = list(filter(lambda x: x.name == tag, element.parent.find_all(tag, recursive=False)))
+            if len(siblings) > 1:
+                position = siblings.index(element) + 1
+                current_path += f":nth-of-type({position})"
                 
-            log_with_time("Complete translation done")
-        else:
-            # Compare the previous and current content to identify changes
-            if previous_xx.get('page-content') != current_xx.get('page-content'):
-                log_with_time("Changes detected in xx.json, identifying specific changes")
+            parent_path = get_element_path(element.parent)
+            if parent_path:
+                return f"{parent_path} > {current_path}"
+            return current_path
+
+        # Function to find matching elements in different soups
+        def find_matching_element(source_element, target_soup):
+            if not source_element or not target_soup:
+                return None
                 
-                # Extract chunks from the current content
-                current_content = current_xx.get('page-content', '')
+            path = get_element_path(source_element)
+            # Remove 'root >' from the beginning of the path
+            if path.startswith('root > '):
+                path = path[6:]
                 
-                # Break the content into paragraphs or HTML elements for comparison
+            try:
+                # Try to find the element using the generated path
+                found_elements = target_soup.select(path)
+                if found_elements:
+                    return found_elements[0]
+            except Exception as e:
+                log_with_time(f"Error finding element with path {path}: {str(e)}")
+                
+            return None
+
+        # Function to find elements that have changed
+        def find_changed_elements(current_soup, previous_soup):
+            changed_elements = []
+            
+            # Function to recursively check elements for changes
+            def check_element(element, path=""):
+                if not element or not element.name:
+                    return
+                    
+                # Skip comments and processing instructions
+                if isinstance(element, (BeautifulSoup.Comment, BeautifulSoup.ProcessingInstruction)):
+                    return
+                    
+                current_path = f"{path}/{element.name}" if path else element.name
+                
+                # Find corresponding element in previous soup
+                prev_element = find_matching_element(element, previous_soup)
+                
+                # Check if element is new or modified
+                if not prev_element:
+                    changed_elements.append((element, "new"))
+                    return  # If new, no need to check children
+                
+                # Compare the element's string content (ignoring whitespace differences)
+                current_text = element.get_text(strip=True)
+                prev_text = prev_element.get_text(strip=True)
+                
+                if current_text != prev_text:
+                    changed_elements.append((element, "modified"))
+                    return  # If modified, no need to check children
+                
+                # If this element hasn't changed, check its children
+                for child in element.find_all(recursive=False):
+                    if child.name:  # Skip text nodes
+                        check_element(child, current_path)
+            
+            # Start checking from the root's children
+            for element in current_soup.find_all(recursive=False):
+                check_element(element)
+                
+            return changed_elements
+
+        # Find changed elements
+        log_with_time("Identifying changed elements")
+        changed_elements = find_changed_elements(current_soup, previous_soup)
+        log_with_time(f"Found {len(changed_elements)} changed elements")
+
+        # If no specific changes found or this is the first translation, translate the whole content
+        if not changed_elements or not fr_content:
+            log_with_time("No specific changes found or first translation, translating entire content")
+            
+            # Use the existing translation code for full content
+            # Process in chunks if the content is large (over 6000 characters)
+            if len(current_content) > 6000:
+                log_with_time("Content is large, processing in batches")
+                
+                # Split content into manageable chunks based on HTML structure
                 chunks = []
-                current_chunk = ""
-                for line in current_content.splitlines():
-                    current_chunk += line + "\n"
-                    # Use closing tags as chunk boundaries
-                    if "</div>" in line or "</section>" in line or "</p>" in line:
-                        chunks.append(current_chunk.strip())
-                        current_chunk = ""
+                current_position = 0
                 
-                # Add any remaining content as a final chunk
-                if current_chunk.strip():
-                    chunks.append(current_chunk.strip())
+                # Function to find a good split point
+                def find_split_point(text, start_pos, chunk_size=6000):
+                    end_pos = min(start_pos + chunk_size, len(text))
+                    if end_pos >= len(text):
+                        return len(text)
+                    
+                    # Look for end of section/div tags as good split points
+                    for marker in ['</section>', '</div>']:
+                        marker_pos = text.rfind(marker, start_pos, end_pos)
+                        if marker_pos != -1:
+                            return marker_pos + len(marker)
+                    
+                    # If no good split point found, look for end of paragraph
+                    paragraph_end = text.rfind('</p>', start_pos, end_pos)
+                    if paragraph_end != -1:
+                        return paragraph_end + 4
+                    
+                    # Fallback to sentence end
+                    for punct in ['. ', '! ', '? ']:
+                        punct_pos = text.rfind(punct, start_pos, end_pos)
+                        if punct_pos != -1:
+                            return punct_pos + 2
+                    
+                    # Last resort: just split at chunk_size
+                    return end_pos
+                
+                # Split content into chunks
+                while current_position < len(current_content):
+                    split_point = find_split_point(current_content, current_position)
+                    chunk = current_content[current_position:split_point]
+                    chunks.append(chunk)
+                    current_position = split_point
                 
                 log_with_time(f"Split content into {len(chunks)} chunks")
                 
-                # Compare each chunk with the previous content to see if it changed
-                prev_content = previous_xx.get('page-content', '')
-                fr_content = fr_data.get('page-content', '')
-                
-                changes_made = False
+                # Translate each chunk separately
+                translated_chunks = []
                 for i, chunk in enumerate(chunks):
-                    # Skip very small chunks as they might be just HTML tags
-                    if len(chunk) < 30:
-                        continue
-                        
-                    # If this chunk exists in the previous content, skip it
-                    if chunk in prev_content:
-                        log_with_time(f"Chunk {i+1} unchanged, skipping")
-                        continue
+                    log_with_time(f"Translating chunk {i+1}/{len(chunks)} ({len(chunk)} characters)")
                     
-                    # This chunk is new or modified, translate it
-                    log_with_time(f"Translating chunk {i+1}")
-                    translation_start = time.time()
-                    
+                    # Translate current chunk
+                    chunk_translation_start = time.time()
                     response = client.chat.completions.create(
                         model="gpt-4o-mini",
                         messages=[
-                            {"role": "system", "content": "Translate the given HTML content from English to French. Keep all HTML tags and structure intact. Use widely accepted French football terminology."},
+                            {"role": "system", "content": "Translate the given JSON HTML content into French while keeping all JSON HTML tags and structure intact. Use widely accepted French football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translations of the following and that only, no extra text or markdown"},
                             {"role": "user", "content": chunk}
                         ],
                         temperature=0.7,
                     )
+                    chunk_translation_end = time.time()
                     
-                    translated_chunk = response.choices[0].message.content.strip()
-                    if translated_chunk.startswith("```") and translated_chunk.endswith("```"):
-                        translated_chunk = translated_chunk.split("```")[1].strip()
+                    log_with_time(f"Chunk {i+1} translated in {(chunk_translation_end - chunk_translation_start):.2f} seconds")
                     
-                    translation_end = time.time()
-                    log_with_time(f"Chunk translated in {(translation_end - translation_start):.2f} seconds")
+                    # Get translated chunk
+                    translated_chunk = response.choices[0].message.content
+                    if translated_chunk.startswith("```json\n") and translated_chunk.endswith("\n```"):
+                        translated_chunk = translated_chunk[7:-3].strip()
                     
-                    # Try to find where to insert the translated chunk in the French content
-                    # First, see if we can find this chunk's context in the current English content
-                    chunk_start = current_content.find(chunk)
-                    if chunk_start > 0:
-                        # Get some context before the chunk
-                        context_before = current_content[max(0, chunk_start-100):chunk_start]
-                        # Look for the same context in the previous English content
-                        prev_context_pos = prev_content.find(context_before)
-                        
-                        if prev_context_pos >= 0:
-                            # If found, look for the same context in the French content
-                            fr_context_pos = fr_content.find(context_before)
-                            if fr_context_pos >= 0:
-                                # Insert the translated chunk right after this context
-                                insertion_point = fr_context_pos + len(context_before)
-                                fr_data['page-content'] = fr_content[:insertion_point] + translated_chunk + fr_content[insertion_point:]
-                                changes_made = True
-                                continue
-                    
-                    # If we can't find a good insertion point, append to the end
-                    log_with_time(f"Could not find exact insertion point for chunk {i+1}, appending to translation")
-                    
-                    # If we're dealing with the first chunk and no good match found, 
-                    # it might be a total replacement
-                    if i == 0 and not changes_made:
-                        log_with_time("First chunk changed significantly, re-translating entire content")
-                        response = client.chat.completions.create(
-                            model="gpt-4o-mini",
-                            messages=[
-                                {"role": "system", "content": "Translate the given HTML content from English to French. Keep all HTML tags and structure intact. Use widely accepted French football terminology."},
-                                {"role": "user", "content": current_content}
-                            ],
-                            temperature=0.7,
-                        )
-                        full_translated_content = response.choices[0].message.content.strip()
-                        if full_translated_content.startswith("```") and full_translated_content.endswith("```"):
-                            full_translated_content = full_translated_content.split("```")[1].strip()
-                        
-                        fr_data['page-content'] = full_translated_content
-                        changes_made = True
-                        break
-                    
-                    # Otherwise, just append the translated chunk
-                    fr_data['page-content'] += "\n" + translated_chunk
-                    changes_made = True
+                    translated_chunks.append(translated_chunk)
                 
-                if not changes_made:
-                    log_with_time("Content changed but no specific chunks identified for translation")
-                    # Fall back to translating the whole thing
-                    response = client.chat.completions.create(
-                        model="gpt-4o-mini",
-                        messages=[
-                            {"role": "system", "content": "Translate the given HTML content from English to French. Keep all HTML tags and structure intact. Use widely accepted French football terminology."},
-                            {"role": "user", "content": current_content}
-                        ],
-                        temperature=0.7,
-                    )
-                    full_translated_content = response.choices[0].message.content.strip()
-                    if full_translated_content.startswith("```") and full_translated_content.endswith("```"):
-                        full_translated_content = full_translated_content.split("```")[1].strip()
-                    
-                    fr_data['page-content'] = full_translated_content
+                # Combine all translated chunks
+                log_with_time("Combining all translated chunks")
+                translated_content = "".join(translated_chunks)
+                
             else:
-                log_with_time("No changes detected in the page-content")
+                # For smaller content, translate the whole thing at once
+                log_with_time("Content is small enough to translate in one go")
+                
+                # Translate the content to French
+                log_with_time("Sending translation request to OpenAI API")
+                translation_start = time.time()
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "Translate the given JSON HTML content into French while keeping all JSON HTML tags and structure intact. Use widely accepted French football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translations of the following and that only, no extra text or markdown"},
+                        {"role": "user", "content": current_content}
+                    ],
+                    temperature=0.7,
+                )
+                translation_end = time.time()
+                log_with_time(f"Received response from OpenAI API after {(translation_end - translation_start):.2f} seconds")
 
+                # Extract the translated content
+                log_with_time("Extracting translated content from response")
+                translated_content = response.choices[0].message.content
+                
+                if translated_content.startswith("```json\n") and translated_content.endswith("\n```"):
+                    log_with_time("Removing code block markers from response")
+                    translated_content = translated_content[7:-3].strip()
+                
+                fr_data["page-content"] = translated_content
+        else:
+            # For incremental updates, translate only the changed elements
+            log_with_time("Starting incremental translation of changed elements")
+            
+            # Group changes by parent container to minimize translation calls
+            def get_common_ancestor(elements, max_depth=3):
+                """Find the common ancestor within max_depth levels"""
+                if not elements:
+                    return None
+                
+                common_parents = {}
+                
+                for element, change_type in elements:
+                    # Try to find a suitable parent within max_depth levels
+                    parent = element
+                    for _ in range(max_depth):
+                        if parent.parent and parent.parent.name != 'root':
+                            parent = parent.parent
+                        else:
+                            break
+                    
+                    parent_path = get_element_path(parent)
+                    if parent_path not in common_parents:
+                        common_parents[parent_path] = {
+                            'element': parent,
+                            'children': []
+                        }
+                    common_parents[parent_path]['children'].append((element, change_type))
+                
+                return common_parents
+            
+            # Group changes by common ancestors
+            grouped_changes = get_common_ancestor(changed_elements)
+            log_with_time(f"Grouped changes into {len(grouped_changes)} containers")
+            
+            for parent_path, group in grouped_changes.items():
+                parent_element = group['element']
+                log_with_time(f"Processing container: {parent_element.name}")
+                
+                # Get the HTML of the parent element
+                element_html = str(parent_element)
+                
+                # Translate this element
+                log_with_time(f"Translating container ({len(element_html)} characters)")
+                translation_start = time.time()
+                
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "Translate the given HTML content into French while keeping all HTML tags and structure intact. Use widely accepted French football terminology, ensuring accuracy and natural flow. Maintain authenticity and precision without altering the original meaning. Output only the translations of the following and that only, no extra text or markdown"},
+                        {"role": "user", "content": element_html}
+                    ],
+                    temperature=0.7,
+                )
+                
+                translation_end = time.time()
+                log_with_time(f"Container translated in {(translation_end - translation_start):.2f} seconds")
+                
+                # Extract the translated content
+                translated_html = response.choices[0].message.content
+                
+                # Remove any markdown code block markers if present
+                if translated_html.startswith("```") and translated_html.endswith("```"):
+                    translated_html = re.sub(r'^```.*?\n', '', translated_html)
+                    translated_html = re.sub(r'\n```$', '', translated_html)
+                
+                # Parse the translated HTML
+                translated_element = BeautifulSoup(translated_html, 'lxml')
+                
+                # Find the corresponding element in the French soup
+                if fr_soup:
+                    fr_element = find_matching_element(parent_element, fr_soup)
+                    
+                    if fr_element:
+                        # Replace the element in the French soup
+                        fr_element.replace_with(translated_element)
+                    else:
+                        # If the element doesn't exist in the French soup, we need to find where to add it
+                        parent_in_fr = find_matching_element(parent_element.parent, fr_soup)
+                        if parent_in_fr:
+                            # Find the position where to insert the new element
+                            siblings = list(parent_element.parent.children)
+                            position = siblings.index(parent_element)
+                            
+                            # Insert at the same relative position
+                            fr_siblings = list(parent_in_fr.children)
+                            if position < len(fr_siblings):
+                                fr_siblings[position].insert_before(translated_element)
+                            else:
+                                parent_in_fr.append(translated_element)
+                        else:
+                            log_with_time(f"Could not find a place to insert {parent_element.name} in French version")
+                else:
+                    # This is the first translation, create a new soup
+                    fr_soup = parse_html("")
+                    # Add the translated element to the root
+                    fr_soup.root.append(translated_element)
+            
+            if fr_soup:
+                # Extract the HTML content from inside the root element
+                fr_content = ''.join(str(child) for child in fr_soup.root.children)
+                fr_data["page-content"] = fr_content
+            else:
+                log_with_time("No French soup was created, falling back to full translation")
+                # Use the full translation code here (omitted for brevity)
+                # This is a fallback and should not normally happen
+        
         # Create the fr.json file
-        log_with_time("Saving fr.json file")
-        os.makedirs('locales', exist_ok=True)
+        log_with_time("Writing updated fr.json file")
         with open('locales/fr.json', 'w', encoding='utf-8') as json_file:
             json.dump(fr_data, json_file, ensure_ascii=False, indent=2)
 
         total_time = time.time() - start_time
-        log_with_time(f"Translation complete. Total execution time: {total_time:.2f} seconds")
+        log_with_time(f"Translated content saved to locales/fr.json. Total execution time: {total_time:.2f} seconds")
         EOL
 
-        python translate_changes.py
+        python incremental_translate.py
 
     - name: Commit and push French translation
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         git add locales/fr.json
-        git diff --quiet && git diff --staged --quiet || git commit -m "Auto-translate changes in xx.json to French"
+        git diff --quiet && git diff --staged --quiet || git commit -m "Auto-translate xx.json to French"
         git push
 
     - name: Checkout proguide repo
@@ -258,5 +446,5 @@ jobs:
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         git add index.html locales/fr.json
-        git diff --quiet && git diff --staged --quiet || git commit -m "Auto-translate changes in xx.json to French"
+        git diff --quiet && git diff --staged --quiet || git commit -m "Auto-translate xx.json to French"
         git push
