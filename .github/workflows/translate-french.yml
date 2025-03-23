@@ -60,6 +60,11 @@ jobs:
         # Extract the translated content
         translated_content = response.choices[0].message.content
 
+        
+        if translated_content.startswith("```json\n") and translated_content.endswith("\n```"):
+
+            translated_content = translated_content[7:-3].strip()  # Remove ```json\n and \n```
+
         # Create the fr.json file
         fr_data = {"page-content": translated_content}
         os.makedirs('locales', exist_ok=True)
