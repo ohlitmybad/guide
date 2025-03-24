@@ -2175,15 +2175,14 @@ function _0x5707(_0xd20fa7,_0x4d36b5){const _0x4dcd69=_0x4dcd();return _0x5707=f
   }
   
   function reattachNavigationEventListeners() {
-
               // Add mobile menu toggle functionality
-              const menuToggle2 = document.querySelector('.menu-toggle');
+              const menuToggle = document.querySelector('.menu-toggle');
               const navContainer = document.querySelector('.nav-container');
               
-              menuToggle2.addEventListener('click', function() {
+              menuToggle.addEventListener('click', function() {
                 navContainer.classList.toggle('active');
               });
-              
+
               document.querySelectorAll('.nav-container a').forEach(link => {
       const newLink = link.cloneNode(true);
       if (link.parentNode) {
@@ -2332,3 +2331,4 @@ function _0x5707(_0xd20fa7,_0x4d36b5){const _0x4dcd69=_0x4dcd();return _0x5707=f
         </html>
         
         
+
