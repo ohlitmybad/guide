@@ -283,7 +283,7 @@
  .menu-toggle {
      display: none;
      position: fixed;
-     top: 80px;
+     top: 82px;
      right: 10px;
     /* Changed from left to right */
      z-index: 1001;
@@ -373,9 +373,6 @@
      margin: 0;
 }
  @media (max-width: 768px) {
-
-
-
      .menu-toggle {
          display: block;
     }
@@ -712,7 +709,8 @@ color: #fff;
   position: relative;
   display: inline-block;
 }
-	    @media (max-width: 768px) {
+
+@media (max-width: 768px) {
 .language-switcher-container {
   display: none;
 }}
@@ -1995,22 +1993,7 @@ Non-penalty goals per 90 x9, Goals per 90 x8, xG per 90 x5, Goal conversion % x4
                       currentElement = currentElement.parentElement;
                     }
                   }
-                  
-                  // Different scroll behavior for mobile and desktop
-                  if (window.innerWidth <= 768) { // Mobile
-                    setTimeout(() => {
-                      // First scroll the element into view
-                      targetElement.scrollIntoView({ behavior: 'smooth' });
-                      
-                      // Then adjust for header offset with a shorter delay and smoother transition
-                      setTimeout(() => {
-                        window.scrollBy({
-                          top: -85,
-                          behavior: 'instant' // Use instant to hide the adjustment
-                        });
-                      }, 400); // Reduced from 500ms
-                    }, 300);
-                  } else { // Desktop
+ 
                     const headerOffset = 85;
                     const elementPosition = targetElement.getBoundingClientRect().top;
                     const offsetPosition = elementPosition + window.pageYOffset - headerOffset;
@@ -2019,7 +2002,7 @@ Non-penalty goals per 90 x9, Goals per 90 x8, xG per 90 x5, Goal conversion % x4
                       top: offsetPosition,
                       behavior: 'smooth'
                     });
-                  }
+              
                 }
               }
         
@@ -2192,14 +2175,31 @@ function _0x5707(_0xd20fa7,_0x4d36b5){const _0x4dcd69=_0x4dcd();return _0x5707=f
   }
   
   function reattachNavigationEventListeners() {
-    // Handle navigation menu links
-    document.querySelectorAll('.nav-container a').forEach(link => {
+
+              // Add mobile menu toggle functionality
+              const menuToggle2 = document.querySelector('.menu-toggle');
+              const navContainer = document.querySelector('.nav-container');
+              
+              menuToggle2.addEventListener('click', function() {
+                navContainer.classList.toggle('active');
+              });
+              
+              document.querySelectorAll('.nav-container a').forEach(link => {
       const newLink = link.cloneNode(true);
       if (link.parentNode) {
         link.parentNode.replaceChild(newLink, link);
         
         newLink.addEventListener('click', function(e) {
           e.preventDefault();
+          
+          // Add mobile sidebar closing behavior
+          if (window.innerWidth <= 768) {
+            const parentLi = this.closest('li');
+            const hasChildren = parentLi.querySelector('ul');
+            if (!hasChildren) {
+              document.querySelector('.nav-container').classList.remove('active');
+            }
+          }
           
           // Clear all active states
           document.querySelectorAll('.nav-container li').forEach(li => {
@@ -2285,20 +2285,11 @@ function _0x5707(_0xd20fa7,_0x4d36b5){const _0x4dcd69=_0x4dcd();return _0x5707=f
       }
     }
     
-    // Scroll to target
-    if (window.innerWidth <= 768) {
-      setTimeout(() => {
-        targetElement.scrollIntoView({ behavior: 'smooth' });
-        setTimeout(() => {
-          window.scrollBy({ top: -85, behavior: 'instant' });
-        }, 400);
-      }, 300);
-    } else {
       const headerOffset = 85;
       const elementPosition = targetElement.getBoundingClientRect().top;
       const offsetPosition = elementPosition + window.pageYOffset - headerOffset;
       window.scrollTo({ top: offsetPosition, behavior: 'smooth' });
-    }
+    
   }
   
   const preferredLanguage = getPreferredLanguage();
