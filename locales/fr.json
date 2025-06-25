@@ -10,6 +10,14 @@
     "title": "DataMB | Guide",
     "description": "Explication des outils, des statistiques et de la méthodologie utilisés par DataMB"
   },
+  "positions":{
+      "goalkeeper": "Gardien",
+      "centreback": "Défenseur",
+      "fullback": "Latéral",
+      "midfielder": "Milieu",
+      "winger": "Ailier",
+      "striker": "Buteur"
+  },
   "search": {
     "placeholder": "Cherchez une équipe ou joueur..."
   },
