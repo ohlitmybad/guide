@@ -1,4 +1,4 @@
-name: Translate to French
+name: Translate to Multiple Languages
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
       - 'locales/xx.json'
 
 jobs:
-  translate-to-french:
+  translate-to-multiple-languages:
     runs-on: ubuntu-latest
 
     steps:
@@ -27,12 +27,12 @@ jobs:
         python -m pip install --upgrade pip
         pip install openai beautifulsoup4 lxml
 
-    - name: Translate changes in xx.json to French
+    - name: Translate changes in xx.json to multiple languages
       env:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       id: translate
       run: |
-        cat > translate_to_french.py << 'EOL'
+        cat > translate_to_languages.py << 'EOL'
         import json
         import os
         import time
@@ -42,6 +42,37 @@ jobs:
         from bs4 import BeautifulSoup
         from openai import OpenAI
         import hashlib
+
+        # Language configurations
+        LANGUAGES = {
+            'fr': {
+                'name': 'French',
+                'default_data': {
+                    "common": {"nav": {"players": "Joueurs","pro": "Pro","teams": "Équipes"}},
+                    "meta": {"title": "DataMB | Guide","description": "Explication des outils, des statistiques et de la méthodologie utilisés par DataMB"},
+                    "search": {"placeholder": "Cherchez une équipe ou joueur..."}
+                },
+                'system_prompt': "Translate the given HTML content into French while keeping all HTML tags and structure intact. Use widely accepted French football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translation, no extra text or markdown."
+            },
+            'tr': {
+                'name': 'Turkish',
+                'default_data': {
+                    "common": {"nav": {"players": "Oyuncular","pro": "Pro","teams": "Takımlar"}},
+                    "meta": {"title": "DataMB | Rehber","description": "DataMB tarafından kullanılan araçlar, istatistikler ve metodolojinin açıklaması"},
+                    "search": {"placeholder": "Takım veya oyuncu arayın..."}
+                },
+                'system_prompt': "Translate the given HTML content into Turkish while keeping all HTML tags and structure intact. Use widely accepted Turkish football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translation, no extra text or markdown."
+            },
+            'es': {
+                'name': 'Spanish',
+                'default_data': {
+                    "common": {"nav": {"players": "Jugadores","pro": "Pro","teams": "Equipos"}},
+                    "meta": {"title": "DataMB | Guía","description": "Explicación de las herramientas, estadísticas y metodología utilizadas por DataMB"},
+                    "search": {"placeholder": "Buscar equipo o jugador..."}
+                },
+                'system_prompt': "Translate the given HTML content into Spanish while keeping all HTML tags and structure intact. Use widely accepted Spanish football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translation, no extra text or markdown."
+            }
+        }
 
         # Function to log with timestamps
         def log_with_time(message):
@@ -155,12 +186,12 @@ jobs:
             """Compute a hash for each section to track changes"""
             return hashlib.md5(section_content.encode('utf-8')).hexdigest()
 
-        def translate_section(client, section_content):
+        def translate_section(client, section_content, system_prompt):
             """Translate a single section using OpenAI API"""
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": "Translate the given HTML content into French while keeping all HTML tags and structure intact. Use widely accepted French football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translation, no extra text or markdown."},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": section_content}
                 ],
                 temperature=0.7,
@@ -174,8 +205,203 @@ jobs:
             
             return translated_content
 
+        def process_language(lang_code, lang_config, current_sections, current_hierarchy, 
+                           previous_sections, current_content, sections_to_translate, client):
+            """Process translation for a single language"""
+            log_with_time(f"Processing {lang_config['name']} translation")
+            
+            # Load existing translation if available
+            lang_file = f'locales/{lang_code}.json'
+            lang_data = lang_config['default_data'].copy()
+            
+            try:
+                with open(lang_file, 'r', encoding='utf-8') as file:
+                    lang_data = json.load(file)
+                    log_with_time(f"Loaded existing {lang_code}.json")
+            except FileNotFoundError:
+                log_with_time(f"No existing {lang_code}.json found, will create new file")
+
+            # If no sections to translate, we're done for this language
+            if not sections_to_translate:
+                log_with_time(f"No changes detected that require translation for {lang_config['name']}")
+                return
+
+            # Load existing content if available
+            existing_content = lang_data.get('page-content', '')
+            existing_sections = {}
+            existing_hierarchy = {}
+            if existing_content:
+                existing_sections, existing_hierarchy = extract_sections(existing_content)
+                log_with_time(f"Extracted {len(existing_sections)} sections from existing {lang_config['name']} content")
+
+            # Translate changed sections
+            log_with_time(f"Translating {len(sections_to_translate)} changed sections for {lang_config['name']}")
+            translated_sections = {}
+            
+            for i, (section_id, content) in enumerate(sections_to_translate.items()):
+                log_with_time(f"Translating {lang_config['name']} section {i+1}/{len(sections_to_translate)}: {section_id}")
+                translation_start = time.time()
+                
+                translated_section = translate_section(client, content, lang_config['system_prompt'])
+                
+                translation_end = time.time()
+                log_with_time(f"{lang_config['name']} section {section_id} translated in {(translation_end - translation_start):.2f} seconds")
+                
+                translated_sections[section_id] = translated_section
+
+            # Construct the final content by replacing only the changed sections
+            log_with_time(f"Constructing final {lang_config['name']} content")
+            final_content = current_content  # Default fallback
+            
+            # If we have existing content, use it as a base and update only changed sections
+            if existing_content:
+                final_content = existing_content
+                soup = BeautifulSoup(final_content, 'lxml')
+                
+                # Create a mapping from English section fingerprints to corresponding elements
+                element_map = {}
+                
+                # First, map by ID if available
+                for element in soup.select('[id]'):
+                    element_map[element['id']] = element
+                    
+                # Then map by structural fingerprint for non-ID elements
+                for element in soup.find_all(['section', 'div', 'article']):
+                    if not element.get('id'):
+                        fingerprint = create_element_fingerprint(element)
+                        element_map[f"fp_{fingerprint}"] = element
+                
+                log_with_time(f"Created {lang_config['name']} element map with {len(element_map)} entries")
+                
+                # Statistics for logging
+                sections_matched = 0
+                sections_not_matched = 0
+                
+                # For each translated section, find its corresponding element
+                for section_id, translated_content in translated_sections.items():
+                    # Try to find the element using our mapping
+                    element = element_map.get(section_id)
+                    
+                    if element:
+                        # We found a direct match by ID or fingerprint
+                        sections_matched += 1
+                        log_with_time(f"Found direct match for {lang_config['name']} section {section_id}")
+                        
+                        # Create a new element from the translated content
+                        new_soup = BeautifulSoup(translated_content, 'lxml')
+                        if new_soup.contents:
+                            new_element = new_soup.contents[0]
+                            # Preserve the ID from the original element if it exists
+                            if element.get('id') and not new_element.get('id'):
+                                new_element['id'] = element['id']
+                            element.replace_with(new_element)
+                        else:
+                            log_with_time(f"Warning: Translated content for {lang_config['name']} {section_id} could not be parsed")
+                    
+                    else:
+                        # No direct match found, try alternative matching strategies
+                        sections_not_matched += 1
+                        log_with_time(f"No direct match found for {lang_config['name']} section {section_id}, trying alternative strategies")
+                        
+                        # Try to find by structural similarity (similar to original logic)
+                        if section_id.startswith("section_") or section_id.startswith("fp_"):
+                            en_section = None
+                            en_soup = BeautifulSoup(current_content, 'lxml')
+                            
+                            # Try to find the original English element that was translated
+                            if section_id.startswith("section_"):
+                                index = int(section_id.split("_")[1])
+                                en_elements = en_soup.find_all(['section', 'div', 'article'])
+                                if 0 <= index < len(en_elements):
+                                    en_section = en_elements[index]
+                            elif section_id.startswith("fp_"):
+                                fingerprint = section_id.split("_", 1)[1]
+                                for element_check in en_soup.find_all(['section', 'div', 'article']):
+                                    if create_element_fingerprint(element_check) == fingerprint:
+                                        en_section = element_check
+                                        break
+                            
+                            if en_section:
+                                # Get the tag name, classes, and approximate position
+                                tag_name = en_section.name
+                                classes = en_section.get('class', [])
+                                
+                                # Find all elements with same tag and classes
+                                potential_matches = []
+                                
+                                for elem in soup.find_all(tag_name):
+                                    elem_classes = elem.get('class', [])
+                                    class_overlap = set(classes) & set(elem_classes)
+                                    
+                                    if (not classes and not elem_classes) or class_overlap:
+                                        # Compute structural similarity score
+                                        en_structure = [child.name for child in en_section.find_all(recursive=False)]
+                                        elem_structure = [child.name for child in elem.find_all(recursive=False)]
+                                        
+                                        # Simple similarity measure: count of common child tags
+                                        similarity = len(set(en_structure) & set(elem_structure))
+                                        
+                                        potential_matches.append((elem, similarity))
+                                
+                                # Sort by similarity score (highest first)
+                                potential_matches.sort(key=lambda x: x[1], reverse=True)
+                                
+                                if potential_matches:
+                                    # Use the best match
+                                    best_match = potential_matches[0][0]
+                                    log_with_time(f"Found best structural match for {lang_config['name']} {section_id} with similarity score {potential_matches[0][1]}")
+                                    
+                                    # Create a new element from the translated content
+                                    new_soup = BeautifulSoup(translated_content, 'lxml')
+                                    if new_soup.contents:
+                                        new_element = new_soup.contents[0]
+                                        # Preserve the ID and classes from the original element
+                                        if best_match.get('id') and not new_element.get('id'):
+                                            new_element['id'] = best_match['id']
+                                        best_match.replace_with(new_element)
+                                        sections_matched += 1
+                                        sections_not_matched -= 1
+                                    else:
+                                        log_with_time(f"Warning: Translated content for {lang_config['name']} {section_id} could not be parsed")
+                
+                log_with_time(f"{lang_config['name']} section matching summary: {sections_matched} matched, {sections_not_matched} not matched")
+                
+                # Update the final content
+                final_content = str(soup)
+            else:
+                # For a completely new translation, translate everything
+                log_with_time(f"No existing {lang_config['name']} content to update, using full translation")
+                translation_start = time.time()
+                
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": lang_config['system_prompt']},
+                        {"role": "user", "content": current_content}
+                    ],
+                    temperature=0.7,
+                )
+                
+                final_content = response.choices[0].message.content
+                if final_content.startswith("```") and "```" in final_content:
+                    final_content = re.sub(r"```[a-z]*\n", "", final_content, 1)
+                    final_content = final_content.rstrip("\n```")
+                    
+                translation_end = time.time()
+                log_with_time(f"Full {lang_config['name']} translation completed in {(translation_end - translation_start):.2f} seconds")
+
+            # Save the language file
+            log_with_time(f"Creating {lang_code}.json file")
+            lang_data["page-content"] = final_content
+            os.makedirs('locales', exist_ok=True)
+            with open(lang_file, 'w', encoding='utf-8') as json_file:
+                json.dump(lang_data, json_file, ensure_ascii=False, indent=2)
+            
+            log_with_time(f"{lang_config['name']} translation completed and saved to {lang_file}")
+
+        # Main execution starts here
         start_time = time.time()
-        log_with_time("Starting translation process")
+        log_with_time("Starting multi-language translation process")
 
         # Load the current xx.json file
         log_with_time("Loading current xx.json file")
@@ -185,15 +411,6 @@ jobs:
         except Exception as e:
             log_with_time(f"Error loading xx.json: {e}")
             sys.exit(1)
-
-        # Load the previous fr.json file if it exists
-        fr_data = {"common": {"nav": {"players": "Joueurs","pro": "Pro","teams": "Équipes"}},"meta": {"title": "DataMB | Guide","description": "Explication des outils, des statistiques et de la méthodologie utilisés par DataMB"},"search": {"placeholder": "Cherchez une équipe ou joueur..."}}
-        try:
-            with open('locales/fr.json', 'r', encoding='utf-8') as file:
-                fr_data = json.load(file)
-                log_with_time("Loaded existing fr.json")
-        except FileNotFoundError:
-            log_with_time("No existing fr.json found, will create new file")
 
         # Get the content from the previous commit
         log_with_time("Retrieving content from previous commit")
@@ -235,9 +452,14 @@ jobs:
             else:
                 log_with_time(f"No change in section {section_id}, skipping translation")
 
-        # If no existing fr.json or all sections changed, translate everything
-        if not os.path.exists('locales/fr.json') or not previous_content:
-            log_with_time("No previous translation or complete content change, translating entire content")
+        # Check if any language files are missing - if so, translate everything
+        missing_languages = []
+        for lang_code in LANGUAGES.keys():
+            if not os.path.exists(f'locales/{lang_code}.json'):
+                missing_languages.append(lang_code)
+        
+        if missing_languages or not previous_content:
+            log_with_time(f"Missing language files {missing_languages} or complete content change, translating entire content")
             
             # Filter out any child sections if their parent is already included
             sections_to_translate = {
@@ -257,197 +479,31 @@ jobs:
         log_with_time("Initializing OpenAI API client")
         client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
-        # Load existing French translation if available
-        existing_fr_content = fr_data.get('page-content', '')
-        existing_fr_sections = {}
-        existing_fr_hierarchy = {}
-        if existing_fr_content:
-            existing_fr_sections, existing_fr_hierarchy = extract_sections(existing_fr_content)
-            log_with_time(f"Extracted {len(existing_fr_sections)} sections from existing French content")
-
-        # Translate changed sections
-        log_with_time(f"Translating {len(sections_to_translate)} changed sections")
-        translated_sections = {}
-        
-        for i, (section_id, content) in enumerate(sections_to_translate.items()):
-            log_with_time(f"Translating section {i+1}/{len(sections_to_translate)}: {section_id}")
-            translation_start = time.time()
-            
-            translated_section = translate_section(client, content)
-            
-            translation_end = time.time()
-            log_with_time(f"Section {section_id} translated in {(translation_end - translation_start):.2f} seconds")
-            
-            translated_sections[section_id] = translated_section
-
-        # Construct the final French content by replacing only the changed sections
-        log_with_time("Constructing final French content")
-        final_fr_content = current_content  # Default fallback
-        
-        # If we have existing French content, use it as a base and update only changed sections
-        if existing_fr_content:
-            final_fr_content = existing_fr_content
-            fr_soup = BeautifulSoup(final_fr_content, 'lxml')
-            
-            # Create a mapping from English section fingerprints to corresponding French elements
-            # This helps with identification even when section IDs don't match
-            fr_element_map = {}
-            
-            # First, map by ID if available
-            for element in fr_soup.select('[id]'):
-                fr_element_map[element['id']] = element
-                
-            # Then map by structural fingerprint for non-ID elements
-            for element in fr_soup.find_all(['section', 'div', 'article']):
-                if not element.get('id'):
-                    fingerprint = create_element_fingerprint(element)
-                    fr_element_map[f"fp_{fingerprint}"] = element
-            
-            log_with_time(f"Created French element map with {len(fr_element_map)} entries")
-            
-            # Statistics for logging
-            sections_matched = 0
-            sections_not_matched = 0
-            
-            # For each translated section, find its corresponding element in French
-            for section_id, translated_content in translated_sections.items():
-                # Try to find the element using our mapping
-                fr_element = fr_element_map.get(section_id)
-                
-                if fr_element:
-                    # We found a direct match by ID or fingerprint
-                    sections_matched += 1
-                    log_with_time(f"Found direct match for section {section_id}")
-                    
-                    # Create a new element from the translated content
-                    new_soup = BeautifulSoup(translated_content, 'lxml')
-                    if new_soup.contents:
-                        new_element = new_soup.contents[0]
-                        # Preserve the ID from the original element if it exists
-                        if fr_element.get('id') and not new_element.get('id'):
-                            new_element['id'] = fr_element['id']
-                        fr_element.replace_with(new_element)
-                    else:
-                        log_with_time(f"Warning: Translated content for {section_id} could not be parsed")
-                
-                else:
-                    # No direct match found, try alternative matching strategies
-                    sections_not_matched += 1
-                    log_with_time(f"No direct match found for section {section_id}, trying alternative strategies")
-                    
-                    # First, try matching by position if the section_id follows our naming pattern
-                    if section_id.startswith("section_") or section_id.startswith("fp_"):
-                        # For positional matching, find elements of the same type in both trees
-                        en_section = None
-                        en_soup = BeautifulSoup(current_content, 'lxml')
-                        
-                        # Try to find the original English element that was translated
-                        if section_id.startswith("section_"):
-                            index = int(section_id.split("_")[1])
-                            en_elements = en_soup.find_all(['section', 'div', 'article'])
-                            if 0 <= index < len(en_elements):
-                                en_section = en_elements[index]
-                        elif section_id.startswith("fp_"):
-                            # For fingerprint-based sections, try to find by ID in the current elements
-                            fingerprint = section_id.split("_", 1)[1]
-                            for element in en_soup.find_all(['section', 'div', 'article']):
-                                if create_element_fingerprint(element) == fingerprint:
-                                    en_section = element
-                                    break
-                        
-                        if en_section:
-                            # Get the tag name, classes, and approximate position
-                            tag_name = en_section.name
-                            classes = en_section.get('class', [])
-                            
-                            # Find all elements in French content with same tag and classes
-                            potential_matches = []
-                            
-                            for fr_elem in fr_soup.find_all(tag_name):
-                                # Check if classes match approximately (allowing for some differences)
-                                fr_classes = fr_elem.get('class', [])
-                                class_overlap = set(classes) & set(fr_classes)
-                                
-                                if (not classes and not fr_classes) or class_overlap:
-                                    # Compute structural similarity score
-                                    en_structure = [child.name for child in en_section.find_all(recursive=False)]
-                                    fr_structure = [child.name for child in fr_elem.find_all(recursive=False)]
-                                    
-                                    # Simple similarity measure: count of common child tags
-                                    similarity = len(set(en_structure) & set(fr_structure))
-                                    
-                                    potential_matches.append((fr_elem, similarity))
-                            
-                            # Sort by similarity score (highest first)
-                            potential_matches.sort(key=lambda x: x[1], reverse=True)
-                            
-                            if potential_matches:
-                                # Use the best match
-                                best_match = potential_matches[0][0]
-                                log_with_time(f"Found best structural match for {section_id} with similarity score {potential_matches[0][1]}")
-                                
-                                # Create a new element from the translated content
-                                new_soup = BeautifulSoup(translated_content, 'lxml')
-                                if new_soup.contents:
-                                    new_element = new_soup.contents[0]
-                                    # Preserve the ID and classes from the original element
-                                    if best_match.get('id') and not new_element.get('id'):
-                                        new_element['id'] = best_match['id']
-                                    best_match.replace_with(new_element)
-                                    sections_matched += 1
-                                    sections_not_matched -= 1
-                                else:
-                                    log_with_time(f"Warning: Translated content for {section_id} could not be parsed")
-                
-            log_with_time(f"Section matching summary: {sections_matched} matched, {sections_not_matched} not matched")
-            
-            # Update the final content
-            final_fr_content = str(fr_soup)
-        else:
-            # For a completely new translation, or if we can't match sections, translate everything
-            log_with_time("No existing French content to update, using full translation")
-            translation_start = time.time()
-            
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "Translate the given HTML content into French while keeping all HTML tags and structure intact. Use widely accepted French football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translation, no extra text or markdown."},
-                    {"role": "user", "content": current_content}
-                ],
-                temperature=0.7,
-            )
-            
-            final_fr_content = response.choices[0].message.content
-            if final_fr_content.startswith("```") and "```" in final_fr_content:
-                final_fr_content = re.sub(r"```[a-z]*\n", "", final_fr_content, 1)
-                final_fr_content = final_fr_content.rstrip("\n```")
-                
-            translation_end = time.time()
-            log_with_time(f"Full translation completed in {(translation_end - translation_start):.2f} seconds")
-
-        # Save the fr.json file
-        log_with_time("Creating fr.json file")
-        fr_data["page-content"] = final_fr_content
-        os.makedirs('locales', exist_ok=True)
-        with open('locales/fr.json', 'w', encoding='utf-8') as json_file:
-            json.dump(fr_data, json_file, ensure_ascii=False, indent=2)
+        # Process each language
+        for lang_code, lang_config in LANGUAGES.items():
+            try:
+                process_language(lang_code, lang_config, current_sections, current_hierarchy,
+                               previous_sections, current_content, sections_to_translate, client)
+            except Exception as e:
+                log_with_time(f"Error processing {lang_config['name']}: {e}")
+                # Continue with other languages even if one fails
 
         # Save a cache of the current content for future reference
         with open('locales/xx_previous.json', 'w', encoding='utf-8') as cache_file:
             json.dump(current_data, cache_file, ensure_ascii=False, indent=2)
 
         total_time = time.time() - start_time
-        log_with_time(f"Translation completed and saved to locales/fr.json. Total execution time: {total_time:.2f} seconds")
+        log_with_time(f"Multi-language translation completed. Total execution time: {total_time:.2f} seconds")
         EOL
 
-        python translate_to_french.py
+        python translate_to_languages.py
 
-    - name: Commit and push French translation
+    - name: Commit and push translations
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
-        git add locales/fr.json locales/xx_previous.json
-        git diff --quiet && git diff --staged --quiet || git commit -m "Auto-translate xx.json to French"
+        git add locales/fr.json locales/tr.json locales/es.json locales/xx_previous.json
+        git diff --quiet && git diff --staged --quiet || git commit -m "Auto-translate xx.json to French, Turkish, and Spanish"
         git push
 
     - name: Checkout proguide repo
@@ -462,8 +518,10 @@ jobs:
         cd proguide
         mkdir -p locales
         cp $GITHUB_WORKSPACE/locales/fr.json locales/
+        cp $GITHUB_WORKSPACE/locales/tr.json locales/
+        cp $GITHUB_WORKSPACE/locales/es.json locales/
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
-        git add locales/fr.json
-        git diff --quiet && git diff --staged --quiet || git commit -m "Auto-translate xx.json to French"
+        git add locales/fr.json locales/tr.json locales/es.json
+        git diff --quiet && git diff --staged --quiet || git commit -m "Auto-translate xx.json to French, Turkish, and Spanish"
         git push
