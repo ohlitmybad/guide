@@ -102,7 +102,7 @@ jobs:
             'pt': {
                 'name': 'Portuguese',
                 'default_data': {
-                    "common": {"nav": {"players": "Jogadores","pro": "Pro","teams": "Equipes"}},
+                    "common": {"nav": {"players": "Jogadores","pro": "Pro","teams": "Equipas"}},
                     "meta": {"title": "DataMB | Guia","description": "Explicação das ferramentas, métricas e metodologia utilizadas pela DataMB"},
                     "search": {"placeholder": "Pesquisar equipa ou jogador..."}
                 },
