@@ -71,6 +71,42 @@ jobs:
                     "search": {"placeholder": "Buscar equipo o jugador..."}
                 },
                 'system_prompt': "Translate the given HTML content into Spanish while keeping all HTML tags and structure intact. Use widely accepted Spanish football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translation, no extra text or markdown."
+            },
+            'de': {
+                'name': 'German',
+                'default_data': {
+                    "common": {"nav": {"players": "Spieler","pro": "Pro","teams": "Teams"}},
+                    "meta": {"title": "DataMB | Guide","description": "Erklärung der von DataMB genutzten Tools, Metriken und Methodik"},
+                    "search": {"placeholder": "Team oder Spieler suchen..."}
+                },
+                'system_prompt': "Translate the given HTML content into German while keeping all HTML tags and structure intact. Use widely accepted German football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translation, no extra text or markdown."
+            },
+            'it': {
+                'name': 'Italian',
+                'default_data': {
+                    "common": {"nav": {"players": "Giocatori","pro": "Pro","teams": "Squadre"}},
+                    "meta": {"title": "DataMB | Guida","description": "Spiegazione degli strumenti, delle metriche e della metodologia utilizzati da DataMB"},
+                    "search": {"placeholder": "Cerca una squadra o un giocatore..."}
+                },
+                'system_prompt': "Translate the given HTML content into Italian while keeping all HTML tags and structure intact. Use widely accepted Italian football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translation, no extra text or markdown."
+            },
+            'id': {
+                'name': 'Indonesian',
+                'default_data': {
+                    "common": {"nav": {"players": "Pemain","pro": "Pro","teams": "Tim"}},
+                    "meta": {"title": "DataMB | Panduan","description": "Penjelasan alat, metrik, dan metodologi yang digunakan oleh DataMB"},
+                    "search": {"placeholder": "Masukkan nama tim atau pemain..."}
+                },
+                'system_prompt': "Translate the given HTML content into Indonesian while keeping all HTML tags and structure intact. Use widely accepted Indonesian football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translation, no extra text or markdown."
+            },
+            'pt': {
+                'name': 'Portuguese',
+                'default_data': {
+                    "common": {"nav": {"players": "Jogadores","pro": "Pro","teams": "Equipes"}},
+                    "meta": {"title": "DataMB | Guia","description": "Explicação das ferramentas, métricas e metodologia utilizadas pela DataMB"},
+                    "search": {"placeholder": "Pesquisar equipa ou jogador..."}
+                },
+                'system_prompt': "Translate the given HTML content into Portuguese while keeping all HTML tags and structure intact. Use widely accepted Portuguese football terminology, ensuring accuracy and natural flow. If uncertain about a term, verify its correct usage with online sources. Maintain authenticity and precision without altering the original meaning. Output only the translation, no extra text or markdown."
             }
         }
 
@@ -502,8 +538,8 @@ jobs:
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
-        git add locales/fr.json locales/tr.json locales/es.json locales/xx_previous.json
-        git diff --quiet && git diff --staged --quiet || git commit -m "Auto-translate xx.json to French, Turkish, and Spanish"
+        git add locales/fr.json locales/tr.json locales/es.json locales/de.json locales/it.json locales/id.json locales/pt.json locales/xx_previous.json
+        git diff --quiet && git diff --staged --quiet || git commit -m "Auto-translate xx.json to French, Turkish, Spanish, German, Italian, Indonesian, and Portuguese"
         git push
 
     - name: Checkout proguide repo
@@ -520,8 +556,12 @@ jobs:
         cp $GITHUB_WORKSPACE/locales/fr.json locales/
         cp $GITHUB_WORKSPACE/locales/tr.json locales/
         cp $GITHUB_WORKSPACE/locales/es.json locales/
+        cp $GITHUB_WORKSPACE/locales/de.json locales/
+        cp $GITHUB_WORKSPACE/locales/it.json locales/
+        cp $GITHUB_WORKSPACE/locales/id.json locales/
+        cp $GITHUB_WORKSPACE/locales/pt.json locales/
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
-        git add locales/fr.json locales/tr.json locales/es.json
-        git diff --quiet && git diff --staged --quiet || git commit -m "Auto-translate xx.json to French, Turkish, and Spanish"
+        git add locales/fr.json locales/tr.json locales/es.json locales/de.json locales/it.json locales/id.json locales/pt.json
+        git diff --quiet && git diff --staged --quiet || git commit -m "Auto-translate xx.json to French, Turkish, Spanish, German, Italian, Indonesian, and Portuguese"
         git push
